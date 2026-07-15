@@ -1,22 +1,26 @@
 package com.aniki.anikiai.ui.library
 
 import android.text.format.DateUtils
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Clear
@@ -25,17 +29,14 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -44,9 +45,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -55,6 +58,20 @@ import com.aniki.anikiai.data.db.ItemType
 import com.aniki.anikiai.data.db.ItemWithTags
 import com.aniki.anikiai.data.db.TagEntity
 import com.aniki.anikiai.data.repository.ItemRepository
+import com.aniki.anikiai.ui.theme.Ink
+import com.aniki.anikiai.ui.theme.InkLine
+import com.aniki.anikiai.ui.theme.Kon
+import com.aniki.anikiai.ui.theme.MatchaInk
+import com.aniki.anikiai.ui.theme.MatchaWash
+import com.aniki.anikiai.ui.theme.Muted
+import com.aniki.anikiai.ui.theme.Paper
+import com.aniki.anikiai.ui.theme.Paper2
+import com.aniki.anikiai.ui.theme.PulseDot
+import com.aniki.anikiai.ui.theme.Seal
+import com.aniki.anikiai.ui.theme.SealMark
+import com.aniki.anikiai.ui.theme.ShimmerBox
+import com.aniki.anikiai.ui.theme.typeMonoLabel
+import com.aniki.anikiai.ui.theme.typeThumbBrush
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -79,12 +96,25 @@ fun LibraryScreen(
     val hasActiveFilter by viewModel.hasActiveFilter.collectAsState()
 
     Scaffold(
+        containerColor = Paper,
         topBar = {
             TopAppBar(
-                title = { Text("Aniki Library") },
+                title = {
+                    Row(verticalAlignment = Alignment.Bottom) {
+                        Text("Library", style = MaterialTheme.typography.headlineMedium, color = Ink)
+                        Spacer(Modifier.width(9.dp))
+                        Text(
+                            text = "${items.size} items",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Muted,
+                            modifier = Modifier.padding(bottom = 3.dp)
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Paper),
                 actions = {
                     IconButton(onClick = onOpenSettings) {
-                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                        Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = Muted)
                     }
                 }
             )
@@ -93,6 +123,7 @@ fun LibraryScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .background(Paper)
                 .padding(padding)
                 .padding(bottom = contentPadding.calculateBottomPadding())
         ) {
@@ -105,14 +136,14 @@ fun LibraryScreen(
             )
 
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 TypeFilterRow(selectedType = selectedType, onSelectType = viewModel::setTypeFilter)
                 SortMenu(sortMode = sortMode, onSelectSort = viewModel::setSortMode)
             }
-            HorizontalDivider()
+            Box(Modifier.fillMaxWidth().height(1.dp).background(InkLine))
 
             if (items.isEmpty()) {
                 EmptyState(hasActiveFilter = hasActiveFilter, modifier = Modifier.fillMaxSize())
@@ -120,7 +151,7 @@ fun LibraryScreen(
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     items(items, key = { it.item.id }) { itemWithTags ->
                         ItemRow(itemWithTags, onOpen = onOpenItem, onRetry = viewModel::retry)
-                        HorizontalDivider()
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(InkLine))
                     }
                 }
             }
@@ -128,26 +159,40 @@ fun LibraryScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SearchBar(query: String, onQueryChange: (String) -> Unit) {
-    OutlinedTextField(
-        value = query,
-        onValueChange = onQueryChange,
+    val shape = RoundedCornerShape(11.dp)
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        placeholder = { Text("Search your library") },
-        singleLine = true,
-        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-        trailingIcon = {
-            if (query.isNotEmpty()) {
-                IconButton(onClick = { onQueryChange("") }) {
-                    Icon(Icons.Default.Clear, contentDescription = "Clear search")
-                }
+            .padding(horizontal = 18.dp, vertical = 10.dp)
+            .clip(shape)
+            .background(Paper2)
+            .border(1.dp, InkLine, shape)
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Icon(Icons.Default.Search, contentDescription = null, tint = Muted, modifier = Modifier.size(17.dp))
+        Spacer(Modifier.width(9.dp))
+        Box(Modifier.weight(1f)) {
+            if (query.isEmpty()) {
+                Text("Search your library", style = MaterialTheme.typography.bodyMedium, color = Muted)
+            }
+            androidx.compose.foundation.text.BasicTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(color = Ink),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(Seal),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        if (query.isNotEmpty()) {
+            IconButton(onClick = { onQueryChange("") }, modifier = Modifier.size(28.dp)) {
+                Icon(Icons.Default.Clear, contentDescription = "Clear search", tint = Muted)
             }
         }
-    )
+    }
 }
 
 @Composable
@@ -157,18 +202,18 @@ private fun TagFilterRow(tags: List<TagEntity>, selectedTagIds: Set<String>, onT
         modifier = Modifier
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
+            .padding(horizontal = 18.dp),
+        horizontalArrangement = Arrangement.spacedBy(7.dp)
     ) {
         tags.forEach { tag ->
-            FilterChip(
+            MonoChip(
+                label = tag.label,
                 selected = tag.id in selectedTagIds,
-                onClick = { onToggleTag(tag.id) },
-                label = { Text(tag.label) }
+                onClick = { onToggleTag(tag.id) }
             )
         }
     }
-    Spacer(Modifier.height(4.dp))
+    Spacer(Modifier.height(6.dp))
 }
 
 private data class TypeFilterOption(val label: String, val type: String?)
@@ -182,14 +227,34 @@ private val TYPE_FILTER_OPTIONS = listOf(
 
 @Composable
 private fun TypeFilterRow(selectedType: String?, onSelectType: (String?) -> Unit) {
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
         TYPE_FILTER_OPTIONS.forEach { option ->
-            FilterChip(
+            MonoChip(
+                label = option.label,
                 selected = selectedType == option.type,
-                onClick = { onSelectType(option.type) },
-                label = { Text(option.label) }
+                onClick = { onSelectType(option.type) }
             )
         }
+    }
+}
+
+/** The mockup's `.chip`/`.chip.active`: mono text, kon outline, kon fill when active. */
+@Composable
+private fun MonoChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(8.dp)
+    Box(
+        modifier = Modifier
+            .clip(shape)
+            .background(if (selected) Kon else androidx.compose.ui.graphics.Color.Transparent)
+            .border(1.dp, if (selected) Kon else InkLine, shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 11.dp, vertical = 7.dp)
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.sp),
+            color = if (selected) Paper else Kon
+        )
     }
 }
 
@@ -205,8 +270,8 @@ private fun SortMenu(sortMode: SortMode, onSelectSort: (SortMode) -> Unit) {
 
     Box {
         TextButton(onClick = { expanded = true }) {
-            Text(label)
-            Icon(Icons.Default.ArrowDropDown, contentDescription = "Sort options")
+            Text(label, style = MaterialTheme.typography.labelMedium, color = Kon)
+            Icon(Icons.Default.ArrowDropDown, contentDescription = "Sort options", tint = Kon)
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             DropdownMenuItem(
@@ -229,11 +294,14 @@ private fun SortMenu(sortMode: SortMode, onSelectSort: (SortMode) -> Unit) {
 private fun EmptyState(hasActiveFilter: Boolean, modifier: Modifier = Modifier) {
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         Text(
-            if (hasActiveFilter) {
+            text = if (hasActiveFilter) {
                 "No results match your search and filters."
             } else {
                 "Nothing saved yet. Share something into Aniki, or add a note."
-            }
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = Muted,
+            modifier = Modifier.padding(horizontal = 32.dp)
         )
     }
 }
@@ -242,67 +310,111 @@ private fun EmptyState(hasActiveFilter: Boolean, modifier: Modifier = Modifier) 
 private fun ItemRow(itemWithTags: ItemWithTags, onOpen: (String) -> Unit, onRetry: (String) -> Unit) {
     val item = itemWithTags.item
     val needsAttention = item.status == ItemStatus.NEEDS_ATTENTION
+    val enriched = item.status == ItemStatus.ENRICHED
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onOpen(item.id) }
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.Top
     ) {
-        Text(text = typeEmoji(item.type), modifier = Modifier.padding(end = 12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(text = item.title, fontWeight = FontWeight.Medium, maxLines = 2)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = DateUtils.getRelativeTimeSpanString(
-                        item.createdAt,
-                        System.currentTimeMillis(),
-                        DateUtils.MINUTE_IN_MILLIS
-                    ).toString(),
-                    style = MaterialTheme.typography.bodySmall
+        // Thumb: shimmer while processing, type-tinted gradient once enriched/needs-attention.
+        Box(modifier = Modifier.size(58.dp)) {
+            if (item.status == ItemStatus.PENDING) {
+                ShimmerBox(modifier = Modifier.fillMaxSize())
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(typeThumbBrush(item.type))
                 )
-                Spacer(modifier = Modifier.width(8.dp))
-                StatusBadge(item.status)
-                if (needsAttention) {
-                    Spacer(modifier = Modifier.width(8.dp))
-                    TextButton(onClick = { onRetry(item.id) }) { Text("Retry") }
+                Text(
+                    text = typeMonoLabel(item.type),
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp),
+                    color = Paper,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(4.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.4f))
+                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                )
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = item.title,
+                style = MaterialTheme.typography.titleSmall,
+                color = Ink,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(3.dp))
+
+            if (item.status == ItemStatus.PENDING) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    PulseDot(size = 7.dp)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "Aniki is reading this…",
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                        color = Seal
+                    )
+                }
+            } else {
+                item.summary?.takeIf { it.isNotBlank() }?.let { summary ->
+                    Text(
+                        text = summary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Muted,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
-            if (item.status == ItemStatus.ENRICHED && itemWithTags.tags.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(4.dp))
+            Spacer(Modifier.height(7.dp))
+
+            if (needsAttention) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Couldn't read",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Seal,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Seal.copy(alpha = 0.10f))
+                            .padding(horizontal = 7.dp, vertical = 3.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = { onRetry(item.id) }) {
+                        Text("Retry", style = MaterialTheme.typography.labelLarge, color = Kon)
+                    }
+                }
+            } else if (enriched && itemWithTags.tags.isNotEmpty()) {
                 TagChipsRow(itemWithTags.tags)
             }
         }
-    }
-}
 
-@Composable
-private fun StatusBadge(status: String) {
-    when (status) {
-        ItemStatus.ENRICHED -> Badge(text = "Filed", color = MaterialTheme.colorScheme.primaryContainer)
-        ItemStatus.NEEDS_ATTENTION -> Badge(
-            text = "Couldn't read",
-            color = MaterialTheme.colorScheme.errorContainer,
-            textColor = MaterialTheme.colorScheme.onErrorContainer
-        )
-        else -> Badge(text = "Processing…", color = MaterialTheme.colorScheme.surfaceVariant)
-    }
-}
-
-@Composable
-private fun Badge(
-    text: String,
-    color: androidx.compose.ui.graphics.Color,
-    textColor: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.onSurfaceVariant
-) {
-    Surface(color = color, shape = MaterialTheme.shapes.small) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelSmall,
-            color = textColor,
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-        )
+        Spacer(Modifier.width(8.dp))
+        Column(horizontalAlignment = Alignment.End) {
+            if (enriched) {
+                SealMark(size = 24.dp)
+                Spacer(Modifier.height(6.dp))
+            }
+            Text(
+                text = DateUtils.getRelativeTimeSpanString(
+                    item.createdAt,
+                    System.currentTimeMillis(),
+                    DateUtils.MINUTE_IN_MILLIS
+                ).toString(),
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.5.sp),
+                color = Muted
+            )
+        }
     }
 }
 
@@ -310,25 +422,16 @@ private fun Badge(
 private fun TagChipsRow(tags: List<TagEntity>) {
     Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
         tags.forEach { tag ->
-            Surface(
-                color = MaterialTheme.colorScheme.secondaryContainer,
-                shape = MaterialTheme.shapes.small,
-                modifier = Modifier.padding(end = 6.dp)
-            ) {
-                Text(
-                    text = tag.label,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                )
-            }
+            Text(
+                text = tag.label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MatchaInk,
+                modifier = Modifier
+                    .padding(end = 6.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(MatchaWash)
+                    .padding(horizontal = 8.dp, vertical = 3.dp)
+            )
         }
     }
-}
-
-private fun typeEmoji(type: String): String = when (type) {
-    ItemType.YOUTUBE_VIDEO -> "▶️"
-    ItemType.WEB_ARTICLE -> "🔗"
-    ItemType.NOTE -> "📝"
-    else -> "•"
 }

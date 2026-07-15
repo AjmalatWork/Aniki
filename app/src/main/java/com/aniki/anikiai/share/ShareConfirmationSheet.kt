@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -33,25 +32,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.aniki.anikiai.data.db.ItemType
 import com.aniki.anikiai.ui.theme.Ink
 import com.aniki.anikiai.ui.theme.InkLine
 import com.aniki.anikiai.ui.theme.Kon
-import com.aniki.anikiai.ui.theme.Matcha
 import com.aniki.anikiai.ui.theme.Muted
 import com.aniki.anikiai.ui.theme.Paper
 import com.aniki.anikiai.ui.theme.Paper2
+import com.aniki.anikiai.ui.theme.PulseDot
 import com.aniki.anikiai.ui.theme.Seal
-import com.aniki.anikiai.ui.theme.SealDark
 import com.aniki.anikiai.ui.theme.SealMark
+import com.aniki.anikiai.ui.theme.typeMonoLabel
+import com.aniki.anikiai.ui.theme.typeThumbBrush
 import com.aniki.anikiai.ui.theme.weightedShadow
 import kotlinx.coroutines.delay
 
@@ -138,7 +134,7 @@ fun ShareConfirmationSheet(
                     modifier = Modifier
                         .size(42.dp)
                         .clip(RoundedCornerShape(9.dp))
-                        .background(thumbBrush(itemType))
+                        .background(typeThumbBrush(itemType))
                 )
                 Spacer(Modifier.width(11.dp))
                 Column(modifier = Modifier.weight(1f)) {
@@ -151,7 +147,7 @@ fun ShareConfirmationSheet(
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = typeLabel(itemType),
+                        text = "${typeMonoLabel(itemType)} · detected",
                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.5.sp),
                         color = Kon,
                         modifier = Modifier
@@ -217,25 +213,6 @@ private fun overshoot(t: Float): Float {
 }
 
 @Composable
-private fun PulseDot() {
-    val transition = rememberInfiniteTransition(label = "pulse")
-    val phase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(1100), RepeatMode.Reverse),
-        label = "pulsePhase"
-    )
-    Box(
-        modifier = Modifier
-            .size(8.dp)
-            .scale(0.8f + 0.35f * phase)
-            .alpha(0.3f + 0.7f * phase)
-            .clip(CircleShape)
-            .background(Seal)
-    )
-}
-
-@Composable
 private fun ReadingBar() {
     val transition = rememberInfiniteTransition(label = "reading")
     val progress by transition.animateFloat(
@@ -259,17 +236,4 @@ private fun ReadingBar() {
                 .background(Seal)
         )
     }
-}
-
-private fun typeLabel(type: String): String = when (type) {
-    ItemType.YOUTUBE_VIDEO -> "▶ YOUTUBE VIDEO · detected"
-    ItemType.NOTE -> "✎ NOTE"
-    else -> "◈ WEB ARTICLE · detected"
-}
-
-/** Somber token-blend placeholders standing in for real thumbnails, by type. */
-private fun thumbBrush(type: String): Brush = when (type) {
-    ItemType.YOUTUBE_VIDEO -> Brush.linearGradient(listOf(Kon, SealDark))
-    ItemType.NOTE -> Brush.linearGradient(listOf(Matcha, Kon))
-    else -> Brush.linearGradient(listOf(Kon, Matcha))
 }

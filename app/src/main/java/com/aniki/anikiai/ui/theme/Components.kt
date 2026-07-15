@@ -1,5 +1,11 @@
 package com.aniki.anikiai.ui.theme
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -11,10 +17,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -161,4 +170,47 @@ fun SealMark(
             )
         }
     }
+}
+
+/** The "Aniki is reading this…" pulsing dot — Library processing rows, the Share sheet. */
+@Composable
+fun PulseDot(color: Color = Seal, size: Dp = 8.dp) {
+    val transition = rememberInfiniteTransition(label = "pulse")
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1100), RepeatMode.Reverse),
+        label = "pulsePhase"
+    )
+    Box(
+        modifier = Modifier
+            .size(size)
+            .scale(0.8f + 0.35f * phase)
+            .alpha(0.3f + 0.7f * phase)
+            .clip(CircleShape)
+            .background(color)
+    )
+}
+
+/** Shimmering placeholder for a not-yet-enriched item's thumbnail (Library "processing" rows). */
+@Composable
+fun ShimmerBox(modifier: Modifier = Modifier, shape: Shape = RoundedCornerShape(11.dp)) {
+    val transition = rememberInfiniteTransition(label = "shimmer")
+    val offset by transition.animateFloat(
+        initialValue = -1f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1400, easing = LinearEasing), RepeatMode.Restart),
+        label = "shimmerOffset"
+    )
+    Box(
+        modifier = modifier
+            .clip(shape)
+            .background(
+                Brush.linearGradient(
+                    colors = listOf(Paper2, Color(0xFFF3F0E6), Paper2),
+                    start = Offset(offset * 300f - 150f, 0f),
+                    end = Offset(offset * 300f + 150f, 200f)
+                )
+            )
+    )
 }
