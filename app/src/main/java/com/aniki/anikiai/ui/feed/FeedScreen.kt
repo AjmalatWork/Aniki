@@ -59,6 +59,7 @@ import com.aniki.anikiai.data.db.TagEntity
 import com.aniki.anikiai.data.repository.ItemRepository
 import com.aniki.anikiai.ui.theme.AnikiTheme
 import com.aniki.anikiai.ui.theme.Ink
+import com.aniki.anikiai.ui.theme.ItemThumbnail
 import com.aniki.anikiai.ui.theme.OnDarkBody
 import com.aniki.anikiai.ui.theme.Paper
 import com.aniki.anikiai.ui.theme.PaperLine
@@ -168,7 +169,7 @@ private fun FeedCard(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // Full-bleed ground.
+        // Full-bleed ground: gradient base (also the fallback while a real thumbnail loads/fails).
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -184,6 +185,13 @@ private fun FeedCard(
                     }
                 )
         )
+        if (!isNote && !item.thumbnailUrl.isNullOrBlank()) {
+            ItemThumbnail(
+                thumbnailUrl = item.thumbnailUrl,
+                type = item.type,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
         // Legibility scrim, darkest at the bottom where text sits.
         if (!isNote) {
             Box(

@@ -75,7 +75,7 @@ import com.aniki.anikiai.ui.theme.Paper2
 import com.aniki.anikiai.ui.theme.PulseDot
 import com.aniki.anikiai.ui.theme.Seal
 import com.aniki.anikiai.ui.theme.SealMark
-import com.aniki.anikiai.ui.theme.typeThumbBrush
+import com.aniki.anikiai.ui.theme.ItemThumbnail
 import com.aniki.anikiai.ui.theme.weightedShadow
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -156,7 +156,7 @@ private fun ItemDetailContent(
 
     Box(modifier = modifier) {
         Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-            Hero(item.type, item.category, topInset, onBack, onToggleStar, item.isStarred, item.status)
+            Hero(item.type, item.thumbnailUrl, topInset, onBack, item.status)
 
             Column(modifier = Modifier.padding(18.dp)) {
                     if (!item.category.isNullOrBlank()) {
@@ -223,19 +223,17 @@ private fun ItemDetailContent(
 @Composable
 private fun Hero(
     type: String,
-    category: String?,
+    thumbnailUrl: String?,
     topInset: androidx.compose.ui.unit.Dp,
     onBack: () -> Unit,
-    onToggleStar: (Boolean) -> Unit,
-    isStarred: Boolean,
     status: String
 ) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(172.dp)
-            .background(typeThumbBrush(type))
     ) {
+        ItemThumbnail(thumbnailUrl = thumbnailUrl, type = type, modifier = Modifier.fillMaxSize())
         IconButton(
             onClick = onBack,
             modifier = Modifier

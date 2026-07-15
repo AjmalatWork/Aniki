@@ -1,6 +1,10 @@
 package com.aniki.anikiai
 
 import android.app.Application
+import coil3.ImageLoader
+import coil3.PlatformContext
+import coil3.SingletonImageLoader
+import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import com.aniki.anikiai.data.db.AnikiDatabase
 import com.aniki.anikiai.data.db.FtsIndexer
 import com.aniki.anikiai.data.repository.ItemRepository
@@ -14,7 +18,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import timber.log.Timber
 
-class AnikiApplication : Application() {
+class AnikiApplication : Application(), SingletonImageLoader.Factory {
 
     private val database by lazy { AnikiDatabase.getInstance(this) }
     private val ftsIndexer by lazy { FtsIndexer(database.itemDao()) }
@@ -38,5 +42,14 @@ class AnikiApplication : Application() {
             val stuck = database.itemDao().getPendingItemIds()
             EnrichmentScheduler.reconcilePending(this@AnikiApplication, stuck)
         }
+    }
+
+    // Coil3's automatic ServiceLoader-based discovery of coil-network-okhttp isn't reliable on
+    // Android, so the network fetcher is wired explicitly here (the documented pattern for
+    // Android integration) rather than left to auto-registration.
+    override fun newImageLoader(context: PlatformContext): ImageLoader {
+        return ImageLoader.Builder(context)
+            .components { add(OkHttpNetworkFetcherFactory()) }
+            .build()
     }
 }

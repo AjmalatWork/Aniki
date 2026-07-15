@@ -24,9 +24,12 @@ credentials = "1.5.0"
 googleid = "1.1.1"
 googleServicesPlugin = "4.5.0"
 timber = "5.0.1"
+coil = "3.1.0"
 
 [libraries]
 timber = { group = "com.jakewharton.timber", name = "timber", version.ref = "timber" }
+coil-compose = { group = "io.coil-kt.coil3", name = "coil-compose", version.ref = "coil" }
+coil-network-okhttp = { group = "io.coil-kt.coil3", name = "coil-network-okhttp", version.ref = "coil" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }

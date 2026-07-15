@@ -71,7 +71,7 @@ import com.aniki.anikiai.ui.theme.Seal
 import com.aniki.anikiai.ui.theme.SealMark
 import com.aniki.anikiai.ui.theme.ShimmerBox
 import com.aniki.anikiai.ui.theme.typeMonoLabel
-import com.aniki.anikiai.ui.theme.typeThumbBrush
+import com.aniki.anikiai.ui.theme.ItemThumbnail
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -324,11 +324,12 @@ private fun ItemRow(itemWithTags: ItemWithTags, onOpen: (String) -> Unit, onRetr
             if (item.status == ItemStatus.PENDING) {
                 ShimmerBox(modifier = Modifier.fillMaxSize())
             } else {
-                Box(
+                ItemThumbnail(
+                    thumbnailUrl = item.thumbnailUrl,
+                    type = item.type,
                     modifier = Modifier
                         .fillMaxSize()
                         .clip(RoundedCornerShape(11.dp))
-                        .background(typeThumbBrush(item.type))
                 )
                 Text(
                     text = typeMonoLabel(item.type),

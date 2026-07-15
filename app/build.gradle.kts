@@ -75,6 +75,8 @@ dependencies {
 
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.timber)
+    implementation(libs.coil.compose)
+    implementation(libs.coil.network.okhttp)
 
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.auth)
