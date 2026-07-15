@@ -274,10 +274,10 @@ private fun MetaRow(type: String, sourceUrl: String?, createdAt: Long) {
 
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         if (type != ItemType.NOTE && host != null) {
-            Text("$host", style = MaterialTheme.typography.labelMedium, color = Muted)
-            Text("·", style = MaterialTheme.typography.labelMedium, color = Muted)
+            Text("$host", style = MaterialTheme.typography.labelMedium, color = Kon)
+            Text("·", style = MaterialTheme.typography.labelMedium, color = Kon)
         }
-        Text("saved $saved", style = MaterialTheme.typography.labelMedium, color = Muted)
+        Text("saved $saved", style = MaterialTheme.typography.labelMedium, color = Kon)
     }
 }
 
@@ -364,7 +364,7 @@ private fun SummaryBlock(summary: String, onSave: (String) -> Unit) {
                     colors = ButtonDefaults.buttonColors(containerColor = Kon, contentColor = Paper)
                 ) { Text("Save") }
                 TextButton(onClick = { draft = summary; editing = false }) {
-                    Text("Cancel", color = Muted)
+                    Text("Cancel", color = Kon)
                 }
             }
         } else {

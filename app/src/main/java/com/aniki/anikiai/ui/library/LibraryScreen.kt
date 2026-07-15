@@ -300,7 +300,7 @@ private fun EmptyState(hasActiveFilter: Boolean, modifier: Modifier = Modifier) 
                 "Nothing saved yet. Share something into Aniki, or add a note."
             },
             style = MaterialTheme.typography.bodyMedium,
-            color = Muted,
+            color = Kon,
             modifier = Modifier.padding(horizontal = 32.dp)
         )
     }
@@ -370,7 +370,7 @@ private fun ItemRow(itemWithTags: ItemWithTags, onOpen: (String) -> Unit, onRetr
                     Text(
                         text = summary,
                         style = MaterialTheme.typography.bodySmall,
-                        color = Muted,
+                        color = Kon,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )

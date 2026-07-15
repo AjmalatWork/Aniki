@@ -1,26 +1,31 @@
 package com.aniki.anikiai.ui.navigation
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
@@ -40,6 +45,15 @@ import com.aniki.anikiai.ui.feed.FeedScreen
 import com.aniki.anikiai.ui.library.LibraryScreen
 import com.aniki.anikiai.ui.note.NewNoteScreen
 import com.aniki.anikiai.ui.settings.SettingsScreen
+import com.aniki.anikiai.ui.theme.Ink
+import com.aniki.anikiai.ui.theme.InkLine
+import com.aniki.anikiai.ui.theme.Muted
+import com.aniki.anikiai.ui.theme.OnDarkMuted
+import com.aniki.anikiai.ui.theme.Paper
+import com.aniki.anikiai.ui.theme.PaperLine
+import com.aniki.anikiai.ui.theme.Seal
+import com.aniki.anikiai.ui.theme.SealDark
+import com.aniki.anikiai.ui.theme.weightedShadow
 
 private object AnikiDestinations {
     const val FEED = "feed"
@@ -137,6 +151,13 @@ private fun NavHostController.switchTab(route: String) {
     }
 }
 
+/**
+ * Lives outside FeedScreen's own AnikiTheme(darkGround=true) wrapper — the Scaffold's bottomBar
+ * slot is a sibling, not a child, of the tab content, so it can't just read ambient
+ * MaterialTheme.colorScheme to match whichever tab is showing. It styles itself directly from the
+ * token palette instead: translucent ink floating over the immersive Feed, solid parchment
+ * (elevated) on the Library. (Auto-hide is P1 and skipped — a persistent bar is the fallback.)
+ */
 @Composable
 private fun AnikiBottomBar(
     currentRoute: String?,
@@ -145,53 +166,82 @@ private fun AnikiBottomBar(
     onSelectLibrary: () -> Unit,
     onCapture: () -> Unit
 ) {
-    // Translucent/floating over the immersive Feed; solid/elevated on the Library. (Auto-hide is
-    // P1 and skipped — a persistent translucent bar is the accepted fallback.)
-    val container = if (translucent) {
-        MaterialTheme.colorScheme.surface.copy(alpha = 0.80f)
-    } else {
-        MaterialTheme.colorScheme.surface
-    }
-    Surface(color = container, tonalElevation = if (translucent) 0.dp else 3.dp) {
+    val container = if (translucent) Ink.copy(alpha = 0.55f) else Paper
+    val topLine = if (translucent) PaperLine else InkLine
+    val iconTint = if (translucent) Color(0xFFD6D9E4) else Muted
+    val selectedTint = if (translucent) SealDark else Seal
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(container)
+            .windowInsetsPadding(WindowInsets.navigationBars)
+    ) {
+        Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(topLine))
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+                .padding(horizontal = 24.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            BarItem(
-                icon = Icons.Filled.Home,
-                label = "Feed",
-                selected = currentRoute == AnikiDestinations.FEED,
-                onClick = onSelectFeed
-            )
-            FloatingActionButton(
-                onClick = onCapture,
-                modifier = Modifier.size(52.dp)
-            ) {
-                Icon(Icons.Filled.Add, contentDescription = "Capture")
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                BarItem(
+                    icon = Icons.Filled.Home,
+                    label = "Feed",
+                    selected = currentRoute == AnikiDestinations.FEED,
+                    tint = iconTint,
+                    selectedTint = selectedTint,
+                    onClick = onSelectFeed
+                )
             }
-            BarItem(
-                icon = Icons.AutoMirrored.Filled.List,
-                label = "Library",
-                selected = currentRoute == AnikiDestinations.LIBRARY,
-                onClick = onSelectLibrary
-            )
+            CaptureButton(onClick = onCapture)
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+                BarItem(
+                    icon = Icons.AutoMirrored.Filled.List,
+                    label = "Library",
+                    selected = currentRoute == AnikiDestinations.LIBRARY,
+                    tint = iconTint,
+                    selectedTint = selectedTint,
+                    onClick = onSelectLibrary
+                )
+            }
         }
     }
 }
 
+/** The oxblood weighted capture button — the one large seal-colored fill in the whole app. */
 @Composable
-private fun BarItem(icon: ImageVector, label: String, selected: Boolean, onClick: () -> Unit) {
-    val tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+private fun CaptureButton(onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(52.dp)
+            .weightedShadow(androidx.compose.foundation.shape.RoundedCornerShape(16.dp), ambient = 14.dp, contact = 4.dp)
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(16.dp))
+            .background(Seal)
+            .selectable(selected = false, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(Icons.Filled.Add, contentDescription = "Capture", tint = Paper)
+    }
+}
+
+@Composable
+private fun BarItem(
+    icon: ImageVector,
+    label: String,
+    selected: Boolean,
+    tint: Color,
+    selectedTint: Color,
+    onClick: () -> Unit
+) {
+    val color = if (selected) selectedTint else tint
     Column(
         modifier = Modifier
             .selectable(selected = selected, onClick = onClick)
             .padding(horizontal = 20.dp, vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Icon(icon, contentDescription = label, tint = tint)
-        Text(text = label, style = MaterialTheme.typography.labelSmall, color = tint, textAlign = TextAlign.Center)
+        Icon(icon, contentDescription = label, tint = color)
+        Text(text = label, style = MaterialTheme.typography.labelSmall, color = color, textAlign = TextAlign.Center)
     }
 }
