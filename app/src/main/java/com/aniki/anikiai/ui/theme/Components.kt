@@ -1,0 +1,164 @@
+package com.aniki.anikiai.ui.theme
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+
+// ---------------------------------------------------------------------------
+// Shared material treatments — defined ONCE here so every screen reuses the
+// same physical language instead of re-deriving shadows/seals per screen.
+// ---------------------------------------------------------------------------
+
+/**
+ * The weighted-object shadow combo from the mockup: a soft, wide ambient
+ * shadow plus a tighter contact shadow. Ink-based (somber), never a colored
+ * glow. Apply before clip/background.
+ */
+fun Modifier.weightedShadow(
+    shape: Shape,
+    ambient: Dp = 16.dp,
+    contact: Dp = 5.dp
+): Modifier = this
+    .shadow(
+        elevation = ambient,
+        shape = shape,
+        clip = false,
+        ambientColor = Ink.copy(alpha = 0.55f),
+        spotColor = Ink.copy(alpha = 0.35f)
+    )
+    .shadow(
+        elevation = contact,
+        shape = shape,
+        clip = false,
+        ambientColor = Ink.copy(alpha = 0.30f),
+        spotColor = Ink.copy(alpha = 0.55f)
+    )
+
+/**
+ * A card with physical presence: weighted shadow + a subtle inset highlight
+ * (thin light border) so it reads as an object lying on the ground, not a
+ * flat Material tile.
+ *
+ * @param onDark true when the card sits on the ink ground (dims the highlight).
+ */
+@Composable
+fun WeightedCard(
+    modifier: Modifier = Modifier,
+    shape: Shape = MaterialTheme.shapes.medium,
+    containerColor: Color = Paper2,
+    onDark: Boolean = false,
+    ambient: Dp = 16.dp,
+    contact: Dp = 5.dp,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val highlight = if (onDark) Color.White.copy(alpha = 0.06f) else Color.White.copy(alpha = 0.35f)
+    Column(
+        modifier = modifier
+            .weightedShadow(shape, ambient, contact)
+            .clip(shape)
+            .background(containerColor)
+            .border(1.dp, highlight, shape),
+        content = content
+    )
+}
+
+/**
+ * The 兄 seal — the mark Aniki presses on items it has read and filed.
+ * Two forms, both from the mockup:
+ *
+ *  - [filled] = false: the small outlined chip (circle, 1.5dp seal-colored
+ *    ring, rotated −8°) used on Library rows, Detail hero, note cards.
+ *  - [filled] = true: the stamp block (rounded square, oxblood fill, paper
+ *    glyph, embossed/pressed treatment) used at brand moments — onboarding,
+ *    the share-confirmation sheet.
+ *
+ * @param onDark use the dark-ground seal variant ([SealDark]) for the outlined
+ *   ring/glyph so it stays legible on ink. The filled stamp keeps its oxblood
+ *   body on either ground.
+ */
+@Composable
+fun SealMark(
+    size: Dp = 26.dp,
+    filled: Boolean = false,
+    onDark: Boolean = false,
+    rotation: Float = if (filled) -6f else -8f,
+    modifier: Modifier = Modifier
+) {
+    if (filled) {
+        val corner = size * 0.28f
+        val shape = RoundedCornerShape(corner)
+        Box(
+            modifier = modifier
+                .size(size)
+                .rotate(rotation)
+                .weightedShadow(shape, ambient = size * 0.18f, contact = size * 0.06f)
+                .clip(shape)
+                // Slight top-light vertical shift for the pressed/embossed feel.
+                .background(
+                    Brush.verticalGradient(
+                        0f to Color(0xFF8D4234),
+                        1f to Color(0xFF6E2F25)
+                    )
+                )
+                .border(1.dp, Color.White.copy(alpha = 0.14f), shape),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "兄",
+                style = TextStyle(
+                    fontFamily = PlexSerif,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = (size.value * 0.48f).sp,
+                    color = Paper,
+                    shadow = Shadow(
+                        color = Ink.copy(alpha = 0.35f),
+                        offset = Offset(0f, 2f),
+                        blurRadius = 2f
+                    )
+                )
+            )
+        }
+    } else {
+        val sealColor = if (onDark) SealDark else Seal
+        Box(
+            modifier = modifier
+                .size(size)
+                .rotate(rotation)
+                .border(1.5.dp, sealColor.copy(alpha = 0.92f), CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "兄",
+                style = TextStyle(
+                    fontFamily = PlexSerif,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = (size.value * 0.5f).sp,
+                    color = sealColor.copy(alpha = 0.92f)
+                )
+            )
+        }
+    }
+}

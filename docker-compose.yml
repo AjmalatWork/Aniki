@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aniki
+      POSTGRES_PASSWORD: aniki_dev_password
+      POSTGRES_DB: aniki
+    ports:
+      - "5432:5432"
+    volumes:
+      - aniki_pgdata:/var/lib/postgresql/data
+
+volumes:
+  aniki_pgdata:

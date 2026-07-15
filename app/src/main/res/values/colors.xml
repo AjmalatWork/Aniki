@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Aniki tokens needed at the XML/theme layer (status bar, pre-Compose window). -->
+    <color name="aniki_ink">#FF14161E</color>
+    <color name="aniki_kon">#FF2A3140</color>
+    <color name="aniki_paper">#FFEFE8D6</color>
+</resources>

@@ -1,0 +1,26 @@
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+.kotlin
+.claude/settings.local.json
+
+# server/ (Node backend)
+server/node_modules
+server/dist
+server/.env
+server/*firebase*.json
+server/serviceAccountKey.json
+# Note: app/google-services.json is NOT gitignored — Firebase docs confirm it holds no
+# secret and is meant to be committed with the app.

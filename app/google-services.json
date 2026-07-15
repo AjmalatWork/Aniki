@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "594898051123",
+    "project_id": "anikiai-9054c",
+    "storage_bucket": "anikiai-9054c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:594898051123:android:7519232a901620e9454346",
+        "android_client_info": {
+          "package_name": "com.aniki.anikiai"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "594898051123-qelv2tupgk0acircmdblctk3841gjre8.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.aniki.anikiai",
+            "certificate_hash": "f0201ed0e1e22e7871ab9c6504d87bebd0491180"
+          }
+        },
+        {
+          "client_id": "594898051123-b26hj683ll6nfvhjplg0qo5rhc5sen42.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDCXTpNZD2_yILLppb7raR_j50bJ9fZ01g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "594898051123-b26hj683ll6nfvhjplg0qo5rhc5sen42.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

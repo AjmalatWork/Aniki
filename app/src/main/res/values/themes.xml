@@ -1,0 +1,23 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base window theme. Compose owns all real styling (AnikiTheme); this only
+         controls the pre-Compose window: status bar and window background.
+         Parent is Light (not DayNight): Aniki's light/dark split is per-screen
+         by design, never a system toggle. -->
+    <style name="Theme.AnikiAI" parent="Theme.Material3.Light.NoActionBar">
+        <item name="colorPrimary">@color/aniki_kon</item>
+        <item name="colorOnPrimary">@color/aniki_paper</item>
+        <item name="android:statusBarColor">@color/aniki_ink</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowBackground">@color/aniki_paper</item>
+    </style>
+
+    <style name="Theme.Aniki.Transparent" parent="Theme.Material3.Light.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowAnimationStyle">@android:style/Animation</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
+</resources>
