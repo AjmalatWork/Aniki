@@ -71,8 +71,15 @@ fun AppRoot() {
             userEmail = authManager.currentUser?.email,
             onSignOut = {
                 scope.launch {
+                    // Only a real account's local cache is safe to wipe here — that data is
+                    // already on the server. A guest's local rows are the ONLY copy: clearing
+                    // them on "Exit guest mode" would destroy data before the guest->account
+                    // migration below ever gets a chance to push it on the next sign-in.
+                    val wasSignedIn = authManager.isSignedIn
                     authManager.signOut()
-                    appContext.syncRepository.clearLocalCache()
+                    if (wasSignedIn) {
+                        appContext.syncRepository.clearLocalCache()
+                    }
                     appContext.syncCursorStore.reset()
                     authPreferences.reset()
                     state = RootState.ONBOARDING
