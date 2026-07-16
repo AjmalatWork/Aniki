@@ -17,9 +17,13 @@ declare global {
 
 function initFirebaseAdmin(): void {
   if (getApps().length > 0) return;
+  if (config.firebaseServiceAccountJson) {
+    initializeApp({ credential: cert(JSON.parse(config.firebaseServiceAccountJson)) });
+    return;
+  }
   if (!config.firebaseServiceAccountPath) {
     throw new Error(
-      "FIREBASE_SERVICE_ACCOUNT_PATH is not set. Either provide it or set AUTH_DEV_BYPASS=true for local dev."
+      "Set FIREBASE_SERVICE_ACCOUNT_JSON or FIREBASE_SERVICE_ACCOUNT_PATH, or AUTH_DEV_BYPASS=true for local dev."
     );
   }
   const serviceAccount = JSON.parse(readFileSync(config.firebaseServiceAccountPath, "utf-8"));

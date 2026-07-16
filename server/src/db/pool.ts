@@ -7,4 +7,7 @@ import { config } from "../config.js";
 // prone than remembering to Number() every updated_at/deleted_at/seq column by hand.
 types.setTypeParser(20, (value: string) => Number(value));
 
-export const pool = new Pool({ connectionString: config.databaseUrl });
+export const pool = new Pool({
+  connectionString: config.databaseUrl,
+  ssl: config.databaseSsl ? { rejectUnauthorized: false } : undefined,
+});

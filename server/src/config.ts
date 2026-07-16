@@ -15,9 +15,19 @@ export const config = {
   // (Google's public capacity, unrelated to this codebase) or a newer Flash model ships.
   geminiModel: process.env.GEMINI_MODEL ?? "gemini-3.5-flash",
   databaseUrl: requireEnv("DATABASE_URL"),
+  // Managed Postgres providers (Render included) terminate with a cert their pool of CAs won't
+  // validate cleanly, so `rejectUnauthorized: false` is the standard escape hatch. Off by default
+  // for local/Docker Postgres, on automatically in production; DATABASE_SSL overrides either way.
+  databaseSsl:
+    process.env.DATABASE_SSL === "true" ||
+    (process.env.NODE_ENV === "production" && process.env.DATABASE_SSL !== "false"),
   // Path to the Firebase Admin service-account JSON. Unset until the Firebase project exists;
   // see AUTH_DEV_BYPASS below for local development in the meantime.
   firebaseServiceAccountPath: process.env.FIREBASE_SERVICE_ACCOUNT_PATH,
+  // Alternative to firebaseServiceAccountPath: the service-account JSON itself, for hosts (e.g.
+  // Render) where pasting an env var is easier than mounting a secret file. Takes precedence
+  // over the path when both are set.
+  firebaseServiceAccountJson: process.env.FIREBASE_SERVICE_ACCOUNT_JSON,
   // Dev-only escape hatch: when true, /sync trusts an X-Debug-Uid header instead of verifying a
   // real Firebase ID token. Must never be enabled outside local development — hard-disabled in
   // production regardless of the env var, so a leaked/misconfigured AUTH_DEV_BYPASS=true can't

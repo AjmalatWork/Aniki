@@ -1,0 +1,46 @@
+services:
+  - type: web
+    name: aniki-server
+    runtime: node
+    plan: starter
+    region: oregon
+    branch: main
+    rootDir: server
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Set in the Render dashboard — never checked into git.
+      # If using Render's own managed Postgres, point this at its "External Database URL"
+      # (or wire it with `fromDatabase` once that instance is defined in this file).
+      - key: DATABASE_URL
+        sync: false
+      # Render's managed Postgres requires SSL; NODE_ENV=production already enables it, but the
+      # var is exposed here so it can be flipped without a redeploy if pointing at a DB that
+      # doesn't support/require SSL.
+      - key: DATABASE_SSL
+        value: "true"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        sync: false
+      # Paste the Firebase Admin service-account JSON here (Project settings > Service accounts >
+      # Generate new private key). Simpler on Render than mounting a secret file for the path
+      # variant.
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: AUTH_DEV_BYPASS
+        value: "false"
+      - key: DAILY_GEMINI_CALL_CAP
+        value: "500"
+      - key: ENRICH_RATE_LIMIT_PER_WINDOW
+        value: "20"
+      - key: ENRICH_RATE_LIMIT_WINDOW_MS
+        value: "60000"
+      - key: TOMBSTONE_RETENTION_DAYS
+        value: "90"
+      - key: SYNC_PULL_PAGE_SIZE
+        value: "500"
