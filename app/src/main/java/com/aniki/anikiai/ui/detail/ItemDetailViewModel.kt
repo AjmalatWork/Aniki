@@ -33,6 +33,13 @@ class ItemDetailViewModel(
         }
     }
 
+    fun saveTitle(title: String) {
+        viewModelScope.launch {
+            repository.updateTitle(itemId, title)
+            SyncWorker.enqueueOneTime(appContext)
+        }
+    }
+
     fun addTag(label: String) {
         if (label.isBlank()) return
         viewModelScope.launch {

@@ -12,6 +12,11 @@ interface AnikiApi {
     @POST("enrich")
     suspend fun enrich(@Body request: EnrichRequestDto): Response<EnrichResponseDto>
 
+    /** Extraction-only re-check of an article's OG/twitter:image -- never touches Gemini, used
+     *  purely by the lazy thumbnail backfill (see ItemRepository.backfillThumbnails). */
+    @POST("extract-thumbnail")
+    suspend fun extractThumbnail(@Body request: ExtractThumbnailRequestDto): Response<ExtractThumbnailResponseDto>
+
     @GET("health")
     suspend fun health(): Response<Unit>
 

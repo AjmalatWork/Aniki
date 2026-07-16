@@ -37,6 +37,7 @@ class SyncRepositoryMapperTest {
         isStarred = true,
         summaryLocked = true,
         tagsLocked = false,
+        titleLocked = true,
         updatedAt = 1_700_000_000_000L,
         deletedAt = 1_700_000_500_000L,
         seq = 42
@@ -74,6 +75,7 @@ class SyncRepositoryMapperTest {
             isStarred = false,
             summaryEditedByUser = true,
             tagsEditedByUser = true,
+            titleEditedByUser = true,
             createdAt = midnightUtcMillis - 1_000, // deliberately != updatedAt to prove the lossy field
             lastViewedAt = 123L,
             lastShownAt = 456L,
@@ -99,6 +101,7 @@ class SyncRepositoryMapperTest {
         assertEquals(original.isStarred, roundTripped.isStarred)
         assertEquals(original.summaryEditedByUser, roundTripped.summaryEditedByUser)
         assertEquals(original.tagsEditedByUser, roundTripped.tagsEditedByUser)
+        assertEquals(original.titleEditedByUser, roundTripped.titleEditedByUser)
         assertEquals(original.updatedAt, roundTripped.updatedAt)
         assertEquals(original.deletedAt, roundTripped.deletedAt)
 

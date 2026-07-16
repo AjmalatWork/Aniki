@@ -197,6 +197,7 @@ class SyncRepository(
             local.isStarred == pulled.isStarred &&
             local.summaryEditedByUser == pulled.summaryLocked &&
             local.tagsEditedByUser == pulled.tagsLocked &&
+            local.titleEditedByUser == pulled.titleLocked &&
             local.deletedAt == pulled.deletedAt
     }
 
@@ -231,6 +232,7 @@ internal fun ItemEntity.toDto(): SyncItemDto = SyncItemDto(
     isStarred = isStarred,
     summaryLocked = summaryEditedByUser,
     tagsLocked = tagsEditedByUser,
+    titleLocked = titleEditedByUser,
     updatedAt = updatedAt,
     deletedAt = deletedAt
 )
@@ -251,6 +253,7 @@ internal fun SyncItemDto.toEntity(dirty: Boolean): ItemEntity = ItemEntity(
     isStarred = isStarred,
     summaryEditedByUser = summaryLocked,
     tagsEditedByUser = tagsLocked,
+    titleEditedByUser = titleLocked,
     createdAt = updatedAt, // best-effort: server doesn't track a separate createdAt
     updatedAt = updatedAt,
     deletedAt = deletedAt,

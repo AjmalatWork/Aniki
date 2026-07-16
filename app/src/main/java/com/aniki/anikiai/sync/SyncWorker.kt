@@ -13,6 +13,8 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.aniki.anikiai.AnikiApplication
 import com.aniki.anikiai.data.remote.NetworkClient
+import com.aniki.anikiai.work.NoteTitleBackfiller
+import com.aniki.anikiai.work.ThumbnailBackfiller
 import java.util.concurrent.TimeUnit
 
 class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
@@ -20,8 +22,14 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
     override suspend fun doWork(): WorkResult {
         val app = applicationContext as AnikiApplication
         val syncManager = SyncManager(NetworkClient.api, app.syncRepository, app.syncCursorStore)
-        return when (syncManager.runSync()) {
-            is SyncResult.Success -> WorkResult.success()
+        return when (val result = syncManager.runSync()) {
+            is SyncResult.Success -> {
+                // Both piggyback on a successful sync (the approved "next sync/open" trigger)
+                // rather than their own worker/schedule.
+                ThumbnailBackfiller.run(app.repository, NetworkClient.api) // zero Gemini cost
+                NoteTitleBackfiller.run(applicationContext, app.repository) // throttled, real cost
+                WorkResult.success()
+            }
             // Guest mode / signed out: nothing to sync yet, not a failure.
             is SyncResult.Unauthenticated -> WorkResult.success()
             is SyncResult.Error -> WorkResult.retry()

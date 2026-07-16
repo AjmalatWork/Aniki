@@ -42,6 +42,14 @@ export interface ExtractedContent {
   thumbnailUrl: string | null;
 }
 
+export interface ExtractThumbnailRequest {
+  sourceUrl: string;
+}
+
+export interface ExtractThumbnailResponse {
+  thumbnailUrl: string | null;
+}
+
 export class EnrichmentError extends Error {}
 
 /** Thrown when the daily Gemini call cap is reached; caught separately to return 429 instead of 422. */

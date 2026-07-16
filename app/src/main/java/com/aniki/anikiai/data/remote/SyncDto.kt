@@ -26,6 +26,7 @@ data class SyncItemDto(
     val isStarred: Boolean,
     val summaryLocked: Boolean,
     val tagsLocked: Boolean,
+    val titleLocked: Boolean,
     val updatedAt: Long,
     val deletedAt: Long?,
     val seq: Long = 0 // ignored on push
@@ -66,7 +67,10 @@ data class SyncPullResponse(
     val tags: List<SyncTagDto>,
     val itemTags: List<SyncItemTagDto>,
     val engagementEvents: List<SyncEngagementEventDto>,
-    val nextCursor: Long
+    val nextCursor: Long,
+    /** True when this page hit the server's page-size cap and there may be more rows beyond
+     *  nextCursor -- the caller should pull again with since=nextCursor until this is false. */
+    val hasMore: Boolean = false
 )
 
 @Serializable

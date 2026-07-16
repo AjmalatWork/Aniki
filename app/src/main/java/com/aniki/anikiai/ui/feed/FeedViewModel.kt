@@ -10,11 +10,16 @@ import com.aniki.anikiai.feed.FeedCandidate
 import com.aniki.anikiai.feed.buildFeed
 import com.aniki.anikiai.sync.SyncWorker
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import timber.log.Timber
+
+private const val IDLE_HINT_DELAY_MS = 15_000L
+private const val HINT_AUTO_DISMISS_MS = 3_000L
 
 sealed interface FeedUiState {
     data object Loading : FeedUiState
@@ -40,6 +45,89 @@ class FeedViewModel(
     private var cachedWeights: Map<String, Double> = emptyMap()
     private var focusedItemId: String? = null
     private var focusedAtMs: Long = 0L
+
+    // --- Swipe hint (first-run + idle re-trigger) ---
+
+    private val feedPrefsStore = FeedPrefsStore(appContext)
+
+    /** Bumped every time the hint should (re)play; the UI keys its peek-and-settle animation +
+     *  3s auto-dismiss timer off this so two triggers in a row restart cleanly. */
+    private val _hintTrigger = MutableStateFlow(0)
+    val hintTrigger: StateFlow<Int> = _hintTrigger
+
+    private val _showHint = MutableStateFlow(false)
+    val showHint: StateFlow<Boolean> = _showHint
+
+    private var hintAutoDismissJob: Job? = null
+    private var idleTimerJob: Job? = null
+    private var isFeedVisible = false
+
+    companion object {
+        // Session-scoped (this process run), not the ViewModel's own lifecycle: Navigation-Compose
+        // may retain/recreate this ViewModel across Feed<->Library tab switches within one process
+        // run, and "session" here means the whole run, not one screen visit. Resets naturally on
+        // process death, which is the only thing allowed to reset it (per the spec).
+        private var sessionPrefsLoaded = false
+        private var isFirstSessionEver = false
+    }
+
+    /** Feed became the visible surface: on the true first-ever visit this process boots the
+     *  first-run hint (and unlocks idle re-trigger for the rest of this session only); on any
+     *  later visit it just arms the idle timer if this is still that first session. */
+    fun onFeedVisible() {
+        isFeedVisible = true
+        viewModelScope.launch {
+            if (!sessionPrefsLoaded) {
+                sessionPrefsLoaded = true
+                val alreadyShownBefore = feedPrefsStore.hasShownFirstOpenHint()
+                isFirstSessionEver = !alreadyShownBefore
+                if (!alreadyShownBefore) {
+                    feedPrefsStore.markFirstOpenHintShown()
+                    triggerHint()
+                }
+            }
+            scheduleIdleTimer()
+        }
+    }
+
+    /** Feed left the visible surface: the idle timer must not run off-screen, and any hint
+     *  currently showing shouldn't linger into whatever screen replaces it. */
+    fun onFeedHidden() {
+        isFeedVisible = false
+        idleTimerJob?.cancel()
+        dismissHint()
+    }
+
+    /** Any tap/swipe on the Feed: dismisses an in-progress hint early and resets the idle clock. */
+    fun onInteraction() {
+        dismissHint()
+        scheduleIdleTimer()
+    }
+
+    private fun scheduleIdleTimer() {
+        idleTimerJob?.cancel()
+        if (!isFeedVisible || !isFirstSessionEver) return
+        idleTimerJob = viewModelScope.launch {
+            delay(IDLE_HINT_DELAY_MS)
+            triggerHint()
+            scheduleIdleTimer() // still the first session -- eligible to replay after another idle gap
+        }
+    }
+
+    private fun triggerHint() {
+        hintAutoDismissJob?.cancel()
+        _hintTrigger.value += 1
+        _showHint.value = true
+        hintAutoDismissJob = viewModelScope.launch {
+            delay(HINT_AUTO_DISMISS_MS)
+            _showHint.value = false
+        }
+    }
+
+    private fun dismissHint() {
+        hintAutoDismissJob?.cancel()
+        _showHint.value = false
+    }
 
     /** Per-session engagement tally for observability — logged on refresh()/onLeaveFeed(), reset each open. */
     private val sessionEventCounts = mutableMapOf<String, Int>()
@@ -73,6 +161,7 @@ class FeedViewModel(
 
     /** Pager settled on a new card: close out the previous card's dwell, then mark the new one shown. */
     fun onPageSettled(itemId: String) {
+        onInteraction()
         if (focusedItemId == itemId) return
         val now = System.currentTimeMillis()
         val previous = focusedItemId

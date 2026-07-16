@@ -1,9 +1,14 @@
 import { JSDOM } from "jsdom";
 import { Readability } from "@mozilla/readability";
+import { assertSafeUrl } from "../security/urlGuard.js";
 import { EnrichmentError, type ExtractedContent } from "../types.js";
 
 const FETCH_TIMEOUT_MS = 15_000;
 const MIN_READABLE_LENGTH = 200;
+// A HEAD response reporting fewer bytes than this is almost certainly a 1x1 tracking pixel, not
+// a usable thumbnail -- can't decode actual pixel dimensions without downloading the image, so
+// this is a cheap heuristic rather than true dimension sniffing.
+const MIN_IMAGE_CONTENT_LENGTH_BYTES = 200;
 
 function metaContent(document: Document, property: string): string | null {
   const el =
@@ -12,7 +17,45 @@ function metaContent(document: Document, property: string): string | null {
   return el?.getAttribute("content")?.trim() || null;
 }
 
+/**
+ * Resolves an og:image/twitter:image candidate into a usable, safe, real-image thumbnail URL, or
+ * null if it isn't one. Never throws -- a bad/unreachable candidate image should degrade to "no
+ * thumbnail" (the client's monogram-tile fallback), not fail the whole enrichment.
+ */
+async function resolveThumbnail(candidate: string | null, baseUrl: string): Promise<string | null> {
+  if (!candidate || candidate.startsWith("data:")) return null;
+
+  let resolved: string;
+  try {
+    resolved = new URL(candidate, baseUrl).toString();
+  } catch {
+    return null;
+  }
+
+  try {
+    await assertSafeUrl(resolved);
+  } catch {
+    return null; // same SSRF guard as the article fetch itself -- the image host is untrusted too
+  }
+
+  try {
+    const res = await fetch(resolved, { method: "HEAD", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    if (!res.ok) return null;
+    const contentType = res.headers.get("content-type") ?? "";
+    if (!contentType.startsWith("image/")) return null;
+    const contentLength = Number(res.headers.get("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > 0 && contentLength < MIN_IMAGE_CONTENT_LENGTH_BYTES) {
+      return null;
+    }
+    return resolved;
+  } catch {
+    return null; // network hiccup on the image -- not fatal to the article enrichment
+  }
+}
+
 export async function extractArticle(url: string): Promise<ExtractedContent> {
+  await assertSafeUrl(url);
+
   let html: string;
   try {
     const res = await fetch(url, {
@@ -25,6 +68,12 @@ export async function extractArticle(url: string): Promise<ExtractedContent> {
     });
     if (!res.ok) {
       throw new EnrichmentError(`Fetch failed with status ${res.status}`);
+    }
+    // fetch() follows redirects by default; the pre-check above only validated the URL the
+    // client gave us, not wherever a redirect chain actually landed. Check the final URL too,
+    // as defense in depth against a public-looking URL redirecting to an internal address.
+    if (res.url && res.url !== url) {
+      await assertSafeUrl(res.url);
     }
     html = await res.text();
   } catch (err) {
@@ -40,7 +89,8 @@ export async function extractArticle(url: string): Promise<ExtractedContent> {
   // Read OpenGraph metadata before Readability rewrites the DOM.
   const ogTitle = metaContent(document, "og:title");
   const ogDescription = metaContent(document, "og:description");
-  const ogImage = metaContent(document, "og:image");
+  const ogImageCandidate = metaContent(document, "og:image") ?? metaContent(document, "twitter:image");
+  const thumbnailUrl = await resolveThumbnail(ogImageCandidate, url);
 
   let content: string | null = null;
   let title: string | null = null;
@@ -66,5 +116,5 @@ export async function extractArticle(url: string): Promise<ExtractedContent> {
     title = ogTitle;
   }
 
-  return { content, title, thumbnailUrl: ogImage };
+  return { content, title, thumbnailUrl };
 }

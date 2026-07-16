@@ -1,6 +1,6 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { config } from "./config.js";
-import { EnrichmentError, type ItemType, type LlmEnrichment } from "./types.js";
+import { EnrichmentError, QuotaExceededError, type ItemType, type LlmEnrichment } from "./types.js";
 
 const CONTENT_CHAR_BUDGET = 12_000; // ~ a few thousand tokens; keeps this to one cheap call
 
@@ -48,7 +48,9 @@ function buildPrompt(type: ItemType, content: string): string {
   return `You are Aniki, an assistant that files away things a user saved so they can find them again later.
 
 Given the ${type} content below, respond with strict JSON matching the provided schema:
-- "title": a better/cleaner title than what's given, or null if you can't improve on it.
+- "title": a short, descriptive title (about 3-8 words), capturing the essence of the content in
+  your own words -- not a restatement of the first line or sentence. Always provide one; only use
+  null if the content is too sparse/unclear to title at all.
 - "summary": 1-3 sentences, neutral tone, no marketing language.
 - "category": exactly one of ${CATEGORIES.join(", ")}.
 - "tags": 3-8 lowercase topical tags (single words or short phrases, no hashtags).
@@ -78,16 +80,29 @@ async function callModel(prompt: string): Promise<LlmEnrichment> {
   return JSON.parse(text) as LlmEnrichment;
 }
 
+/**
+ * `consumeCall` gates the daily cap and must be checked before *every* real Gemini API call —
+ * including the retry below, which is itself a second billable call. Checking it only once per
+ * enrichWithGemini() (the original approach) let a failing-then-retrying request make 2 real API
+ * calls while only counting 1 against the cap, undercounting by up to 2x.
+ */
 export async function enrichWithGemini(
   type: ItemType,
-  content: string
+  content: string,
+  consumeCall: () => boolean
 ): Promise<LlmEnrichment> {
   const prompt = buildPrompt(type, truncate(content));
 
+  if (!consumeCall()) {
+    throw new QuotaExceededError("Daily enrichment call limit reached — try again tomorrow");
+  }
   try {
     return await callModel(prompt);
   } catch (firstErr) {
     // Malformed JSON (or a transient hiccup) — retry once before giving up.
+    if (!consumeCall()) {
+      throw new QuotaExceededError("Daily enrichment call limit reached — try again tomorrow");
+    }
     try {
       return await callModel(prompt);
     } catch (secondErr) {

@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { requireAuth } from "../auth/middleware.js";
+import { config } from "../config.js";
 import { logAndRecord } from "../metrics.js";
 import { pullChanges, pushChanges } from "./repo.js";
 import type { PushRequest } from "./types.js";
@@ -17,11 +18,11 @@ syncRouter.get("/", async (req: Request, res: Response) => {
 
   const start = Date.now();
   try {
-    const result = await pullChanges(req.uid!, since);
+    const result = await pullChanges(req.uid!, since, config.syncPullPageSize);
     logAndRecord(
       `[GET /sync] uid=${req.uid} since=${since} items=${result.items.length} tags=${result.tags.length} ` +
         `itemTags=${result.itemTags.length} events=${result.engagementEvents.length} nextCursor=${result.nextCursor} ` +
-        `latency=${Date.now() - start}ms`,
+        `hasMore=${result.hasMore} latency=${Date.now() - start}ms`,
       "GET /sync",
       Date.now() - start,
       false

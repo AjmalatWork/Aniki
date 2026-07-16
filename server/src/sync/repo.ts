@@ -53,6 +53,7 @@ interface ItemRow {
   is_starred: boolean;
   summary_locked: boolean;
   tags_locked: boolean;
+  title_locked: boolean;
   updated_at: number;
   deleted_at: number | null;
   seq: number;
@@ -75,6 +76,7 @@ function itemRowToDto(row: ItemRow): PulledItemDto {
     isStarred: row.is_starred,
     summaryLocked: row.summary_locked,
     tagsLocked: row.tags_locked,
+    titleLocked: row.title_locked,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
     seq: row.seq,
@@ -139,31 +141,60 @@ function eventRowToDto(row: EventRow): PulledEngagementEventDto {
   };
 }
 
-export async function pullChanges(uid: string, since: number): Promise<PullResponse> {
+/**
+ * Paginated pull: `seq` is a single shared sequence across all 4 synced tables (see the schema
+ * comment in migrations/001_init.sql), so "the next N changes across all tables, in seq order"
+ * is a well-defined page boundary. We find that boundary with one cheap UNION-ALL query over just
+ * the seq column, then fetch each table's full rows bounded to (since, boundary] -- this is what
+ * guarantees no row is skipped: every synced row has a globally unique, monotonically increasing
+ * seq, so nothing between two page boundaries can fall through the gap between per-table queries.
+ */
+export async function pullChanges(uid: string, since: number, pageLimit: number): Promise<PullResponse> {
+  const boundaryRes = await pool.query<{ seq: number }>(
+    `SELECT seq FROM (
+       SELECT seq FROM items WHERE user_id = $1 AND seq > $2
+       UNION ALL
+       SELECT seq FROM tags WHERE user_id = $1 AND seq > $2
+       UNION ALL
+       SELECT seq FROM item_tags WHERE user_id = $1 AND seq > $2
+       UNION ALL
+       SELECT seq FROM engagement_events WHERE user_id = $1 AND seq > $2
+     ) all_changed_seqs
+     ORDER BY seq ASC
+     LIMIT $3`,
+    [uid, since, pageLimit]
+  );
+
+  const hasMore = boundaryRes.rowCount === pageLimit;
+  const boundary = boundaryRes.rowCount! > 0 ? boundaryRes.rows[boundaryRes.rowCount! - 1].seq : since;
+
   const [itemsRes, tagsRes, itemTagsRes, eventsRes] = await Promise.all([
-    pool.query<ItemRow>("SELECT * FROM items WHERE user_id = $1 AND seq > $2 ORDER BY seq ASC", [uid, since]),
-    pool.query<TagRow>("SELECT * FROM tags WHERE user_id = $1 AND seq > $2 ORDER BY seq ASC", [uid, since]),
-    pool.query<ItemTagRow>("SELECT * FROM item_tags WHERE user_id = $1 AND seq > $2 ORDER BY seq ASC", [uid, since]),
+    pool.query<ItemRow>(
+      "SELECT * FROM items WHERE user_id = $1 AND seq > $2 AND seq <= $3 ORDER BY seq ASC",
+      [uid, since, boundary]
+    ),
+    pool.query<TagRow>(
+      "SELECT * FROM tags WHERE user_id = $1 AND seq > $2 AND seq <= $3 ORDER BY seq ASC",
+      [uid, since, boundary]
+    ),
+    pool.query<ItemTagRow>(
+      "SELECT * FROM item_tags WHERE user_id = $1 AND seq > $2 AND seq <= $3 ORDER BY seq ASC",
+      [uid, since, boundary]
+    ),
     pool.query<EventRow>(
-      "SELECT * FROM engagement_events WHERE user_id = $1 AND seq > $2 ORDER BY seq ASC",
-      [uid, since]
+      "SELECT * FROM engagement_events WHERE user_id = $1 AND seq > $2 AND seq <= $3 ORDER BY seq ASC",
+      [uid, since, boundary]
     ),
   ]);
 
-  const items = itemsRes.rows.map(itemRowToDto);
-  const tags = tagsRes.rows.map(tagRowToDto);
-  const itemTags = itemTagsRes.rows.map(itemTagRowToDto);
-  const engagementEvents = eventsRes.rows.map(eventRowToDto);
-
-  const allSeqs = [
-    ...items.map((i) => i.seq),
-    ...tags.map((t) => t.seq),
-    ...itemTags.map((it) => it.seq),
-    ...engagementEvents.map((e) => e.seq),
-  ];
-  const nextCursor = allSeqs.length > 0 ? Math.max(since, ...allSeqs) : since;
-
-  return { items, tags, itemTags, engagementEvents, nextCursor };
+  return {
+    items: itemsRes.rows.map(itemRowToDto),
+    tags: tagsRes.rows.map(tagRowToDto),
+    itemTags: itemTagsRes.rows.map(itemTagRowToDto),
+    engagementEvents: eventsRes.rows.map(eventRowToDto),
+    nextCursor: boundary,
+    hasMore,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -182,8 +213,8 @@ async function upsertItem(client: PoolClient, uid: string, incoming: ItemDto): P
     const inserted = await client.query<{ seq: number }>(
       `INSERT INTO items (id, user_id, type, source_url, normalized_url, title, body_text, summary,
                            thumbnail_url, category, entities, event_date, status, is_starred,
-                           summary_locked, tags_locked, updated_at, deleted_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+                           summary_locked, tags_locked, title_locked, updated_at, deleted_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
        RETURNING seq`,
       [
         incoming.id,
@@ -202,6 +233,7 @@ async function upsertItem(client: PoolClient, uid: string, incoming: ItemDto): P
         incoming.isStarred,
         incoming.summaryLocked,
         incoming.tagsLocked,
+        incoming.titleLocked,
         incoming.updatedAt,
         incoming.deletedAt,
       ]
@@ -222,7 +254,8 @@ async function upsertItem(client: PoolClient, uid: string, incoming: ItemDto): P
     `UPDATE items SET
        type = $3, source_url = $4, normalized_url = $5, title = $6, body_text = $7, summary = $8,
        thumbnail_url = $9, category = $10, entities = $11, event_date = $12, status = $13,
-       is_starred = $14, summary_locked = $15, tags_locked = $16, updated_at = $17, deleted_at = $18,
+       is_starred = $14, summary_locked = $15, tags_locked = $16, title_locked = $17,
+       updated_at = $18, deleted_at = $19,
        seq = nextval('sync_seq'), synced_at = now()
      WHERE id = $1 AND user_id = $2
      RETURNING seq`,
@@ -243,6 +276,7 @@ async function upsertItem(client: PoolClient, uid: string, incoming: ItemDto): P
       incoming.isStarred,
       incoming.summaryLocked,
       incoming.tagsLocked,
+      incoming.titleLocked,
       incoming.updatedAt,
       incoming.deletedAt,
     ]
@@ -405,4 +439,31 @@ export async function pushChanges(uid: string, request: PushRequest): Promise<Pu
   } finally {
     client.release();
   }
+}
+
+export interface TombstonePurgeResult {
+  items: number;
+  tags: number;
+  itemTags: number;
+}
+
+/**
+ * Hard-deletes rows tombstoned (deleted_at set) longer than `retentionMs` ago. Tombstones
+ * otherwise accumulate forever -- pullChanges intentionally still returns them (so other devices
+ * learn of the delete), but nothing ever purged the source rows.
+ *
+ * `retentionMs` is a global assumption, not a per-device one: any device that stays offline
+ * longer than this window will miss the delete on its next sync and see the row as if it were
+ * never deleted (a pull only returns rows with seq > its cursor; a purged tombstone just vanishes
+ * from that stream rather than announcing itself). Not scoped to a single user -- this is a
+ * maintenance sweep across the whole table, run on a schedule, not per-request.
+ */
+export async function purgeOldTombstones(retentionMs: number): Promise<TombstonePurgeResult> {
+  const cutoff = Date.now() - retentionMs;
+  const [items, tags, itemTags] = await Promise.all([
+    pool.query("DELETE FROM items WHERE deleted_at IS NOT NULL AND deleted_at < $1", [cutoff]),
+    pool.query("DELETE FROM tags WHERE deleted_at IS NOT NULL AND deleted_at < $1", [cutoff]),
+    pool.query("DELETE FROM item_tags WHERE deleted_at IS NOT NULL AND deleted_at < $1", [cutoff]),
+  ]);
+  return { items: items.rowCount ?? 0, tags: tags.rowCount ?? 0, itemTags: itemTags.rowCount ?? 0 };
 }

@@ -26,4 +26,13 @@ export const config = {
   // Safety net against a runaway client loop silently blowing through Gemini quota — not a
   // billing system. Counts actual Gemini calls only (cache hits are free and don't count).
   dailyGeminiCallCap: Number(process.env.DAILY_GEMINI_CALL_CAP ?? 500),
+  // Per-IP guard on /enrich (unauthenticated, so the daily cap alone lets one abuser exhaust it
+  // for every real user): max requests per IP within a rolling window before a 429.
+  enrichRateLimitPerWindow: Number(process.env.ENRICH_RATE_LIMIT_PER_WINDOW ?? 20),
+  enrichRateLimitWindowMs: Number(process.env.ENRICH_RATE_LIMIT_WINDOW_MS ?? 60_000),
+  // How long a tombstoned row is kept before being hard-deleted. A device offline longer than
+  // this will re-surface an old delete as if the row still existed on its next sync.
+  tombstoneRetentionDays: Number(process.env.TOMBSTONE_RETENTION_DAYS ?? 90),
+  // Max rows returned per /sync pull page, across all 4 synced tables combined.
+  syncPullPageSize: Number(process.env.SYNC_PULL_PAGE_SIZE ?? 500),
 };

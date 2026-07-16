@@ -327,6 +327,7 @@ private fun ItemRow(itemWithTags: ItemWithTags, onOpen: (String) -> Unit, onRetr
                 ItemThumbnail(
                     thumbnailUrl = item.thumbnailUrl,
                     type = item.type,
+                    sourceUrl = item.sourceUrl,
                     modifier = Modifier
                         .fillMaxSize()
                         .clip(RoundedCornerShape(11.dp))

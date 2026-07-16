@@ -20,6 +20,7 @@ export interface ItemDto {
   isStarred: boolean;
   summaryLocked: boolean;
   tagsLocked: boolean;
+  titleLocked: boolean;
   updatedAt: number;
   deletedAt: number | null;
 }
@@ -69,6 +70,9 @@ export interface PullResponse {
   itemTags: PulledItemTagDto[];
   engagementEvents: PulledEngagementEventDto[];
   nextCursor: number;
+  /** True when this page hit the page-size cap and there may be more rows beyond nextCursor —
+   *  the caller should pull again with since=nextCursor until this is false. */
+  hasMore: boolean;
 }
 
 export interface PushRequest {

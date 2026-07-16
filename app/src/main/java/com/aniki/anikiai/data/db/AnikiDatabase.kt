@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         EngagementEventEntity::class,
         ItemFtsEntity::class
     ],
-    version = 4,
+    version = 6,
     exportSchema = false
 )
 abstract class AnikiDatabase : RoomDatabase() {
@@ -108,13 +108,43 @@ abstract class AnikiDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Adds thumbnailBackfillAttempted (local-only, not synced): lets the lazy OG-image
+         * backfill (polish-pass item 2) mark an article as "tried" so a dead/unreachable URL
+         * isn't re-attempted forever. Existing rows default to 0 (not yet attempted), which is
+         * correct -- the backfill will pick them up on the next sync.
+         */
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE items ADD COLUMN thumbnailBackfillAttempted INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * Adds titleEditedByUser -- same edit-lock pattern as summaryEditedByUser/tagsEditedByUser
+         * (polish-pass item 4: note titles are now Gemini-generated and user-editable, so they
+         * need the same "never overwritten by re-enrichment once edited" guard). Existing rows
+         * default to 0 (not user-edited), which is correct: no title editing UI existed before
+         * this, so nothing could have set it.
+         */
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE items ADD COLUMN titleEditedByUser INTEGER NOT NULL DEFAULT 0")
+                // Local-only cap on the note-title backfill (see ItemEntity's field doc) --
+                // bundled into this same migration since both ship in the same feature pass.
+                db.execSQL("ALTER TABLE items ADD COLUMN titleBackfillAttempted INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getInstance(context: Context): AnikiDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     AnikiDatabase::class.java,
                     "aniki.db"
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { INSTANCE = it }
+                ).addMigrations(
+                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6
+                ).build().also { INSTANCE = it }
             }
         }
     }

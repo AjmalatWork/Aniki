@@ -132,8 +132,12 @@ class ItemRepository(
     }
 
     /**
-     * Writes back a successful enrichment result, honoring the user-edit locks (a no-op guard
-     * for now since no editing UI exists yet, but must not regress once it does).
+     * Writes back a successful enrichment result, honoring the user-edit locks. Title now uses
+     * the same edit-lock pattern as summary/tags (titleEditedByUser) rather than the old
+     * isPlaceholderTitle heuristic ("only overwrite if the title still equals the raw URL") --
+     * that heuristic only ever let a title update once, on the very first enrichment; this
+     * lets every re-enrichment refresh the title (e.g. a Retry after a fetch fix, or the
+     * Gemini-generated title arriving for a NOTE) right up until the user edits it themselves.
      */
     suspend fun applyEnrichment(
         itemId: String,
@@ -148,7 +152,7 @@ class ItemRepository(
         val current = itemDao.getItemById(itemId) ?: return
         val now = System.currentTimeMillis()
 
-        val resolvedTitle = if (isPlaceholderTitle(current)) title ?: current.title else current.title
+        val resolvedTitle = if (!current.titleEditedByUser && !title.isNullOrBlank()) title else current.title
 
         val updated = current.copy(
             title = resolvedTitle,
@@ -168,6 +172,21 @@ class ItemRepository(
         }
         syncFtsRow(itemId)
     }
+
+    /** Candidate pool for the lazy OG-image backfill (see work/ThumbnailBackfiller.kt). */
+    suspend fun getArticlesNeedingThumbnailBackfill(): List<ItemEntity> =
+        itemDao.getArticlesNeedingThumbnailBackfill()
+
+    /** Records a backfill attempt's outcome (thumbnailUrl null on failure/not-found) and marks
+     *  it attempted either way, so it's never retried. Local-only -- not synced, no dirty flag. */
+    suspend fun applyThumbnailBackfill(itemId: String, thumbnailUrl: String?) {
+        itemDao.applyThumbnailBackfill(itemId, thumbnailUrl)
+    }
+
+    /** Candidate pool for the throttled note-title backfill (see work/NoteTitleBackfiller.kt). */
+    suspend fun getNotesNeedingTitleBackfill(): List<ItemEntity> = itemDao.getNotesNeedingTitleBackfill()
+
+    suspend fun markTitleBackfillAttempted(itemId: String) = itemDao.markTitleBackfillAttempted(itemId)
 
     suspend fun markNeedsAttention(itemId: String) {
         val current = itemDao.getItemById(itemId) ?: return
@@ -238,6 +257,16 @@ class ItemRepository(
         syncFtsRow(itemId)
     }
 
+    suspend fun updateTitle(itemId: String, title: String) {
+        if (title.isBlank()) return
+        val current = itemDao.getItemById(itemId) ?: return
+        val now = System.currentTimeMillis()
+        itemDao.updateItem(
+            current.copy(title = title, titleEditedByUser = true, updatedAt = now, dirty = true)
+        )
+        syncFtsRow(itemId)
+    }
+
     suspend fun addUserTag(itemId: String, label: String) {
         val current = itemDao.getItemById(itemId) ?: return
         val normalized = label.trim().lowercase()
@@ -269,10 +298,6 @@ class ItemRepository(
         itemDao.updateItem(current.copy(deletedAt = now, updatedAt = now, dirty = true))
         ftsIndexer.remove(itemId)
     }
-
-    /** A link's Slice-1 title is just its raw URL until enrichment resolves a real one. */
-    private fun isPlaceholderTitle(item: ItemEntity): Boolean =
-        item.type != ItemType.NOTE && item.title == item.sourceUrl
 
     /**
      * Reconciles an item's tags to exactly `tagLabels`. Never hard-deletes: a link that's no

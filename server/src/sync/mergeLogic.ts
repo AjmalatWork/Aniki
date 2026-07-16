@@ -31,6 +31,7 @@ export function itemContentEqual(a: ItemDto, b: ItemDto): boolean {
     a.isStarred === b.isStarred &&
     a.summaryLocked === b.summaryLocked &&
     a.tagsLocked === b.tagsLocked &&
+    a.titleLocked === b.titleLocked &&
     a.deletedAt === b.deletedAt
   );
 }

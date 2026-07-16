@@ -17,6 +17,13 @@ sealed class SyncResult {
  * before that, the next run simply re-pulls from the old cursor (a no-op for anything already
  * merged, since decideMerge treats an identical re-pull as NO_OP) and re-pushes anything still
  * dirty (safe: the server's own content-equality check makes a retried push a no-op too).
+ *
+ * The server pages a pull (SyncPullResponse.hasMore) once a user's backlog exceeds its page size,
+ * so a single pullSync() call may not return everything. The loop below keeps pulling pages
+ * (merging each incrementally as it arrives -- merges are idempotent, so replaying earlier pages
+ * on a retry is harmless) until hasMore is false, still without persisting the cursor until the
+ * very end -- a crash mid-pagination just means the whole pull restarts from the old cursor next
+ * run, exactly like the single-page case always worked.
  */
 class SyncManager(
     private val api: AnikiApi,
@@ -27,19 +34,29 @@ class SyncManager(
         return try {
             val cursor = cursorStore.getCursor()
 
-            val pullResponse = api.pullSync(cursor)
-            if (pullResponse.code() == 401) return SyncResult.Unauthenticated
-            if (!pullResponse.isSuccessful) return SyncResult.Error("Pull failed: HTTP ${pullResponse.code()}")
-            val pulled = pullResponse.body() ?: return SyncResult.Error("Empty pull response")
+            var pullCursor = cursor
+            var pulledItemCount = 0
+            var conflicts = 0
+            var hasMore = true
+            while (hasMore) {
+                val pullResponse = api.pullSync(pullCursor)
+                if (pullResponse.code() == 401) return SyncResult.Unauthenticated
+                if (!pullResponse.isSuccessful) return SyncResult.Error("Pull failed: HTTP ${pullResponse.code()}")
+                val pulled = pullResponse.body() ?: return SyncResult.Error("Empty pull response")
 
-            // Tags before items/itemTags: a tag label must resolve locally before anything
-            // references its (possibly remapped) id.
-            pulled.tags.forEach { repository.mergeTag(it) }
-            val conflicts = pulled.items.count { repository.mergeItem(it) }
-            pulled.itemTags.forEach { repository.mergeItemTag(it) }
-            pulled.engagementEvents.forEach { repository.mergeEngagementEvent(it) }
+                // Tags before items/itemTags: a tag label must resolve locally before anything
+                // references its (possibly remapped) id.
+                pulled.tags.forEach { repository.mergeTag(it) }
+                conflicts += pulled.items.count { repository.mergeItem(it) }
+                pulled.itemTags.forEach { repository.mergeItemTag(it) }
+                pulled.engagementEvents.forEach { repository.mergeEngagementEvent(it) }
 
-            var finalCursor = maxOf(cursor, pulled.nextCursor)
+                pulledItemCount += pulled.items.size
+                pullCursor = maxOf(pullCursor, pulled.nextCursor)
+                hasMore = pulled.hasMore
+            }
+
+            var finalCursor = pullCursor
 
             val dirtyItems = repository.getDirtyItemDtos()
             val dirtyTags = repository.getDirtyTagDtos()
@@ -71,8 +88,8 @@ class SyncManager(
             }
 
             cursorStore.setCursor(finalCursor)
-            Timber.i("sync run: pulled=%d pushed=%d conflicts=%d", pulled.items.size, pushCount, conflicts)
-            SyncResult.Success(pulled = pulled.items.size, pushed = pushCount, conflicts = conflicts)
+            Timber.i("sync run: pulled=%d pushed=%d conflicts=%d", pulledItemCount, pushCount, conflicts)
+            SyncResult.Success(pulled = pulledItemCount, pushed = pushCount, conflicts = conflicts)
         } catch (e: Exception) {
             Timber.w(e, "sync run failed")
             SyncResult.Error(e.message ?: "Unknown sync error")

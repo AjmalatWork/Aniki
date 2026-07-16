@@ -111,6 +111,7 @@ fun ItemDetailScreen(
                 onToggleStar = viewModel::toggleStar,
                 onDeleteRequest = { showDeleteConfirm = true },
                 onSaveSummary = viewModel::saveSummary,
+                onSaveTitle = viewModel::saveTitle,
                 onAddTag = viewModel::addTag,
                 onRemoveTag = viewModel::removeTag,
                 onRetry = viewModel::retry
@@ -146,6 +147,7 @@ private fun ItemDetailContent(
     onToggleStar: (Boolean) -> Unit,
     onDeleteRequest: () -> Unit,
     onSaveSummary: (String) -> Unit,
+    onSaveTitle: (String) -> Unit,
     onAddTag: (String) -> Unit,
     onRemoveTag: (String) -> Unit,
     onRetry: () -> Unit
@@ -156,7 +158,7 @@ private fun ItemDetailContent(
 
     Box(modifier = modifier) {
         Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-            Hero(item.type, item.thumbnailUrl, topInset, onBack, item.status)
+            Hero(item.type, item.thumbnailUrl, item.sourceUrl, topInset, onBack, item.status)
 
             Column(modifier = Modifier.padding(18.dp)) {
                     if (!item.category.isNullOrBlank()) {
@@ -167,7 +169,7 @@ private fun ItemDetailContent(
                         )
                         Spacer(Modifier.height(9.dp))
                     }
-                    Text(text = item.title, style = MaterialTheme.typography.headlineSmall, color = Ink)
+                    TitleBlock(title = item.title, onSave = onSaveTitle)
                     Spacer(Modifier.height(10.dp))
 
                     MetaRow(item.type, item.sourceUrl, item.createdAt)
@@ -224,6 +226,7 @@ private fun ItemDetailContent(
 private fun Hero(
     type: String,
     thumbnailUrl: String?,
+    sourceUrl: String?,
     topInset: androidx.compose.ui.unit.Dp,
     onBack: () -> Unit,
     status: String
@@ -233,7 +236,7 @@ private fun Hero(
             .fillMaxWidth()
             .height(172.dp)
     ) {
-        ItemThumbnail(thumbnailUrl = thumbnailUrl, type = type, modifier = Modifier.fillMaxSize())
+        ItemThumbnail(thumbnailUrl = thumbnailUrl, type = type, sourceUrl = sourceUrl, modifier = Modifier.fillMaxSize())
         IconButton(
             onClick = onBack,
             modifier = Modifier
@@ -318,6 +321,57 @@ private fun ProcessingStatusCard(
         }
         if (actionLabel != null && onAction != null) {
             TextButton(onClick = onAction) { Text(actionLabel, color = Kon) }
+        }
+    }
+}
+
+/** Same edit-lock pattern as SummaryBlock (Slice 4): inline TextField + Save/Cancel, no separate
+ *  dialog. Saving here sets titleEditedByUser=true, so re-enrichment never overwrites it again. */
+@Composable
+private fun TitleBlock(title: String, onSave: (String) -> Unit) {
+    var editing by remember { mutableStateOf(false) }
+    var draft by remember(title) { mutableStateOf(title) }
+
+    if (editing) {
+        Column {
+            TextField(
+                value = draft,
+                onValueChange = { draft = it },
+                textStyle = MaterialTheme.typography.headlineSmall.copy(color = Ink),
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    focusedIndicatorColor = InkLine,
+                    unfocusedIndicatorColor = InkLine,
+                    cursorColor = Seal
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        if (draft.isNotBlank()) onSave(draft)
+                        editing = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Kon, contentColor = Paper)
+                ) { Text("Save") }
+                TextButton(onClick = { draft = title; editing = false }) {
+                    Text("Cancel", color = Kon)
+                }
+            }
+        }
+    } else {
+        Row(verticalAlignment = Alignment.Top) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.headlineSmall,
+                color = Ink,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = { editing = true }, modifier = Modifier.size(28.dp)) {
+                Icon(Icons.Default.Edit, contentDescription = "Edit title", tint = Muted)
+            }
         }
     }
 }

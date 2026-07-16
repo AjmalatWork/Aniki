@@ -58,3 +58,22 @@ val OnDarkMuted = Color(0xFFA6A9B5)
 
 /** Body text on dark grounds, a step brighter than [OnDarkMuted]. */
 val OnDarkBody = Color(0xFFC8CBD6)
+
+// ---------------------------------------------------------------------------
+// Monogram tile tones (Library thumbnails, brief "polish pass" item 2) — a small curated set of
+// Seal blended toward Paper at fixed ratios, staying strictly in the oxblood/parchment family
+// rather than hashing into free RGB space. See ItemVisuals.monogramPalette for the hash-into-set
+// logic; these are just the four tones it picks from.
+// ---------------------------------------------------------------------------
+
+/** 100% Seal. */
+val SealTint1 = Seal
+
+/** Seal blended 80/20 toward Paper. */
+val SealTint2 = Color(0xFF945A4D)
+
+/** Seal blended 60/40 toward Paper. */
+val SealTint3 = Color(0xFFAB7D6F)
+
+/** Seal blended 40/60 toward Paper — light enough to need a dark (not Paper) glyph on top. */
+val SealTint4 = Color(0xFFC1A192)

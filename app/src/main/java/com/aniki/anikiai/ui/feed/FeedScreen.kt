@@ -3,9 +3,18 @@ package com.aniki.anikiai.ui.feed
 import android.content.Intent
 import android.net.Uri
 import android.text.format.DateUtils
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,6 +25,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -40,12 +50,14 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -57,6 +69,8 @@ import com.aniki.anikiai.data.db.ItemType
 import com.aniki.anikiai.data.db.ItemWithTags
 import com.aniki.anikiai.data.db.TagEntity
 import com.aniki.anikiai.data.repository.ItemRepository
+import com.aniki.anikiai.feed.extractPullQuote
+import com.aniki.anikiai.feed.pullQuoteFontSizeSp
 import com.aniki.anikiai.ui.theme.AnikiTheme
 import com.aniki.anikiai.ui.theme.Ink
 import com.aniki.anikiai.ui.theme.ItemThumbnail
@@ -86,12 +100,20 @@ fun FeedScreen(
         }
     )
     val state by viewModel.state.collectAsState()
+    val showHint by viewModel.showHint.collectAsState()
+    val hintTrigger by viewModel.hintTrigger.collectAsState()
     val context = LocalContext.current
 
     // Re-snapshot on every entry (seen-penalties from last visit reshuffle the order); bank the
     // final dwell when the Feed leaves composition.
     LaunchedEffect(Unit) { viewModel.refresh() }
-    DisposableEffect(Unit) { onDispose { viewModel.onLeaveFeed() } }
+    DisposableEffect(Unit) {
+        viewModel.onFeedVisible()
+        onDispose {
+            viewModel.onLeaveFeed()
+            viewModel.onFeedHidden()
+        }
+    }
 
     AnikiTheme(darkGround = true) {
         when (val s = state) {
@@ -127,6 +149,9 @@ fun FeedScreen(
                     FeedCard(
                         itemWithTags = itemWithTags,
                         contentPadding = contentPadding,
+                        showHint = showHint && page == pagerState.settledPage,
+                        hintTrigger = hintTrigger,
+                        onInteraction = viewModel::onInteraction,
                         onOpen = {
                             viewModel.onOpen(itemWithTags.item.id)
                             val item = itemWithTags.item
@@ -151,12 +176,19 @@ fun FeedScreen(
 private fun FeedCard(
     itemWithTags: ItemWithTags,
     contentPadding: PaddingValues,
+    showHint: Boolean,
+    hintTrigger: Int,
+    onInteraction: () -> Unit,
     onOpen: () -> Unit,
     onToggleStar: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val item = itemWithTags.item
     val isNote = item.type == ItemType.NOTE
+    val isVideo = item.type == ItemType.YOUTUBE_VIDEO
+    // WEB_ARTICLE (and any future non-video, non-note type) gets the typographic-hero treatment:
+    // no image, the pull-quote itself is the visual. Video keeps its thumbnail hero unchanged.
+    val isArticle = !isNote && !isVideo
     val savedAgo = DateUtils.getRelativeTimeSpanString(
         item.createdAt,
         System.currentTimeMillis(),
@@ -168,16 +200,47 @@ private fun FeedCard(
         item.sourceUrl?.let { runCatching { Uri.parse(it).host }.getOrNull() } ?: "note"
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        // Full-bleed ground: gradient base (also the fallback while a real thumbnail loads/fails).
+    // Peek-and-settle: the whole card nudges up ~24dp then springs back, echoing the swipe
+    // direction. Keyed off hintTrigger (not showHint) so a second trigger while the first is
+    // still settling restarts cleanly rather than being a no-op on an unchanged boolean.
+    val peekOffset = remember { Animatable(0f) }
+    LaunchedEffect(hintTrigger) {
+        if (hintTrigger == 0 || !showHint) return@LaunchedEffect
+        peekOffset.snapTo(0f)
+        peekOffset.animateTo(-24f, animationSpec = tween(durationMillis = 220))
+        peekOffset.animateTo(
+            0f,
+            animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)
+        )
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .offset { androidx.compose.ui.unit.IntOffset(0, peekOffset.value.dp.roundToPx()) }
+            // Observes touches without consuming them, so the pager's own drag handling is
+            // untouched -- this exists purely to dismiss the hint / reset the idle clock.
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    onInteraction()
+                }
+            }
+    ) {
+        // Full-bleed ground: gradient base. Articles keep a quiet gradient (no image, no scrim --
+        // the pull-quote is the visual, per the brief: "do not add an image/OG hero here").
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
-                    if (isNote) {
-                        Brush.linearGradient(listOf(Color(0xFF20263A), Ink))
-                    } else {
-                        Brush.radialGradient(
+                    when {
+                        isNote -> Brush.linearGradient(listOf(Color(0xFF20263A), Ink))
+                        isArticle -> Brush.radialGradient(
+                            colors = listOf(typeGlow(item.type), Ink),
+                            center = Offset(0.3f, 0.2f),
+                            radius = 1600f
+                        )
+                        else -> Brush.radialGradient(
                             colors = listOf(typeGlow(item.type), Ink),
                             center = Offset(0.3f, 0.25f),
                             radius = 1400f
@@ -185,15 +248,17 @@ private fun FeedCard(
                     }
                 )
         )
-        if (!isNote && !item.thumbnailUrl.isNullOrBlank()) {
+        if (isVideo && !item.thumbnailUrl.isNullOrBlank()) {
             ItemThumbnail(
                 thumbnailUrl = item.thumbnailUrl,
                 type = item.type,
+                sourceUrl = item.sourceUrl,
                 modifier = Modifier.fillMaxSize()
             )
         }
-        // Legibility scrim, darkest at the bottom where text sits.
-        if (!isNote) {
+        // Legibility scrim, darkest at the bottom where text sits -- video only, since it's the
+        // only type still layering text over an image.
+        if (isVideo) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -240,6 +305,15 @@ private fun FeedCard(
                     itemWithTags.tags.forEach { DarkTagChip(it) }
                 }
             }
+        } else if (isArticle) {
+            ArticleHeroCard(
+                item = item,
+                tags = itemWithTags.tags,
+                sourceLabel = sourceLabel,
+                topPad = topPad,
+                contentPadding = contentPadding,
+                onOpen = onOpen
+            )
         } else {
             Column(
                 modifier = Modifier
@@ -307,24 +381,27 @@ private fun FeedCard(
             RailAction(icon = Icons.Default.Close, label = "Dismiss", onClick = onDismiss)
         }
 
-        // Swipe hint.
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = contentPadding.calculateBottomPadding() + 10.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+        // Swipe hint: an affordance nudge, not permanent chrome -- see FeedViewModel for when
+        // it's eligible (first-ever Feed open, plus idle re-trigger during that same session only).
+        AnimatedVisibility(
+            visible = showHint,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = contentPadding.calculateBottomPadding() + 10.dp),
+            enter = fadeIn(animationSpec = tween(durationMillis = 260)),
+            exit = fadeOut(animationSpec = tween(durationMillis = 260))
         ) {
-            Icon(
-                Icons.Default.KeyboardArrowUp,
-                contentDescription = null,
-                tint = Paper.copy(alpha = 0.55f),
-                modifier = Modifier.size(14.dp)
-            )
-            Text(
-                text = "swipe up for next",
-                style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.sp, fontSize = 9.sp),
-                color = Paper.copy(alpha = 0.55f)
-            )
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    Icons.Default.KeyboardArrowUp,
+                    contentDescription = null,
+                    tint = Paper.copy(alpha = 0.55f),
+                    modifier = Modifier.size(14.dp)
+                )
+                Text(
+                    text = "swipe up for next",
+                    style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.sp, fontSize = 9.sp),
+                    color = Paper.copy(alpha = 0.55f)
+                )
+            }
         }
     }
 }
@@ -357,6 +434,17 @@ private fun Modifier.circleBorder(color: Color) = this.border(1.dp, color, Circl
 
 @Composable
 private fun NoteCard(item: com.aniki.anikiai.data.db.ItemEntity, modifier: Modifier = Modifier) {
+    // Prefer the AI summary's pull-quote once enrichment has run (same extraction as articles,
+    // for a consistent typographic voice); a not-yet-enriched note falls back to quoting its own
+    // body text verbatim, same as before.
+    val quote = remember(item.summary, item.bodyText, item.title) {
+        if (!item.summary.isNullOrBlank()) {
+            extractPullQuote(item.summary, item.title)
+        } else {
+            item.bodyText.orEmpty().ifBlank { item.title }
+        }
+    }
+
     WeightedCard(
         modifier = modifier.widthIn(max = 340.dp),
         shape = RoundedCornerShape(18.dp),
@@ -373,7 +461,7 @@ private fun NoteCard(item: com.aniki.anikiai.data.db.ItemEntity, modifier: Modif
                 )
                 Spacer(Modifier.height(14.dp))
                 Text(
-                    text = "“${item.bodyText.orEmpty().ifBlank { item.title }}”",
+                    text = "“$quote”",
                     style = MaterialTheme.typography.titleLarge.copy(fontSize = 19.sp, lineHeight = 27.sp),
                     color = com.aniki.anikiai.ui.theme.Kon,
                     modifier = Modifier.padding(end = 34.dp)
@@ -386,6 +474,79 @@ private fun NoteCard(item: com.aniki.anikiai.data.db.ItemEntity, modifier: Modif
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
             )
+        }
+    }
+}
+
+/**
+ * Article typographic hero (brief #3): no image/OG hero here, deliberately -- the pull-quote
+ * itself fills the card's main area, large, with a corner seal stamp and small domain+tags at
+ * the bottom. Mirrors NoteCard's now-shared pull-quote extraction so articles and (enriched)
+ * notes read with one consistent typographic voice.
+ */
+@Composable
+private fun ArticleHeroCard(
+    item: com.aniki.anikiai.data.db.ItemEntity,
+    tags: List<TagEntity>,
+    sourceLabel: String,
+    topPad: androidx.compose.ui.unit.Dp,
+    contentPadding: PaddingValues,
+    onOpen: () -> Unit
+) {
+    val quote = remember(item.summary, item.title) { extractPullQuote(item.summary, item.title) }
+    val fontSizeSp = remember(quote) { pullQuoteFontSizeSp(quote) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clickable(onClick = onOpen)
+    ) {
+        Column(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .padding(horizontal = 26.dp, vertical = 90.dp)
+        ) {
+            if (!item.category.isNullOrBlank()) {
+                Text(
+                    text = item.category!!.uppercase(),
+                    style = MaterialTheme.typography.labelMedium.copy(letterSpacing = 1.5.sp),
+                    color = Color(0xFFE7B9A8)
+                )
+                Spacer(Modifier.height(16.dp))
+            }
+            Text(
+                text = "“$quote”",
+                style = MaterialTheme.typography.headlineLarge.copy(
+                    fontSize = fontSizeSp.sp,
+                    lineHeight = (fontSizeSp * 1.3).sp
+                ),
+                color = Paper
+            )
+        }
+
+        // Seal stamp, clear of the top pill row -- same "read/filed" motif as everywhere else.
+        SealMark(
+            size = 28.dp,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = topPad + 48.dp, end = 20.dp)
+        )
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = 20.dp, end = 66.dp, bottom = contentPadding.calculateBottomPadding() + 34.dp)
+        ) {
+            Text(text = sourceLabel, style = MaterialTheme.typography.labelMedium, color = OnDarkBody)
+            if (tags.isNotEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    tags.forEach { DarkTagChip(it) }
+                }
+            }
         }
     }
 }

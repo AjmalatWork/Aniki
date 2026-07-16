@@ -57,6 +57,44 @@ interface ItemDao {
     @Query("SELECT id FROM items WHERE status = 'PENDING' AND deletedAt IS NULL")
     suspend fun getPendingItemIds(): List<String>
 
+    /** Articles enriched before OG-image extraction existed (or where it found nothing) and not
+     *  yet retried this device -- the lazy thumbnail backfill's candidate pool (see
+     *  ItemRepository.backfillThumbnails). Capped by the caller, not here, so the query stays
+     *  reusable for any batch size. */
+    @Query(
+        """
+        SELECT * FROM items
+        WHERE type = 'WEB_ARTICLE' AND thumbnailUrl IS NULL AND thumbnailBackfillAttempted = 0
+          AND deletedAt IS NULL
+        ORDER BY createdAt ASC
+        """
+    )
+    suspend fun getArticlesNeedingThumbnailBackfill(): List<ItemEntity>
+
+    @Query("UPDATE items SET thumbnailUrl = :thumbnailUrl, thumbnailBackfillAttempted = 1 WHERE id = :id")
+    suspend fun applyThumbnailBackfill(id: String, thumbnailUrl: String?)
+
+    /** Notes enriched before title generation existed, whose title is still the creation-time
+     *  truncated-body-text stub (see ItemRepository.createNote) -- the note-title backfill's
+     *  candidate pool (see work/NoteTitleBackfiller.kt). SQLite's substr(x,1,60) matches Kotlin's
+     *  String.take(60) exactly, including the shorter-than-60 case. */
+    @Query(
+        """
+        SELECT * FROM items
+        WHERE type = 'NOTE' AND status = 'ENRICHED' AND titleEditedByUser = 0
+          AND titleBackfillAttempted = 0 AND deletedAt IS NULL
+          AND title = substr(bodyText, 1, 60)
+        ORDER BY createdAt ASC
+        """
+    )
+    suspend fun getNotesNeedingTitleBackfill(): List<ItemEntity>
+
+    /** Marks a note's title-backfill attempt made -- called when the re-enrichment is *enqueued*,
+     *  not when it completes (the attempt itself, not its outcome, is what must never repeat
+     *  more than once per device, to bound Gemini cost on a stubbornly-failing note). */
+    @Query("UPDATE items SET titleBackfillAttempted = 1 WHERE id = :id")
+    suspend fun markTitleBackfillAttempted(id: String)
+
     @Transaction
     @Query("SELECT * FROM items WHERE deletedAt IS NULL ORDER BY createdAt DESC")
     fun observeAllItemsWithTags(): Flow<List<ItemWithTags>>

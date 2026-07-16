@@ -30,13 +30,24 @@ class SyncManagerTest {
     private val cursorStore = mockk<SyncCursorStore>(relaxed = true)
     private lateinit var manager: SyncManager
 
-    private fun emptyPull(nextCursor: Long) = SyncPullResponse(
+    private fun emptyPull(nextCursor: Long, hasMore: Boolean = false) = SyncPullResponse(
         items = emptyList(),
         tags = emptyList(),
         itemTags = emptyList(),
         engagementEvents = emptyList(),
-        nextCursor = nextCursor
+        nextCursor = nextCursor,
+        hasMore = hasMore
     )
+
+    private fun pullWithItems(items: List<com.aniki.anikiai.data.remote.SyncItemDto>, nextCursor: Long, hasMore: Boolean = false) =
+        SyncPullResponse(
+            items = items,
+            tags = emptyList(),
+            itemTags = emptyList(),
+            engagementEvents = emptyList(),
+            nextCursor = nextCursor,
+            hasMore = hasMore
+        )
 
     private fun emptyPush(nextCursor: Long) = SyncPushResponse(
         itemAcks = emptyList(),
@@ -153,5 +164,79 @@ class SyncManagerTest {
 
         assertEquals(listOf(dirtyTag), requestSlot.captured.tags)
         assertTrue(requestSlot.captured.items.isEmpty())
+    }
+
+    // -----------------------------------------------------------------
+    // Pull pagination (S3): the server may cap a single pull response and set hasMore=true.
+    // -----------------------------------------------------------------
+
+    @Test
+    fun `hasMore true loops the pull with the previous page's nextCursor until hasMore is false`() = runTest {
+        coEvery { api.pullSync(0L) } returns Response.success(emptyPull(nextCursor = 5L, hasMore = true))
+        coEvery { api.pullSync(5L) } returns Response.success(emptyPull(nextCursor = 9L, hasMore = true))
+        coEvery { api.pullSync(9L) } returns Response.success(emptyPull(nextCursor = 9L, hasMore = false))
+
+        val result = manager.runSync()
+
+        assertEquals(SyncResult.Success(pulled = 0, pushed = 0, conflicts = 0), result)
+        coVerifyOrder {
+            api.pullSync(0L)
+            api.pullSync(5L)
+            api.pullSync(9L)
+        }
+        coVerify(exactly = 1) { cursorStore.setCursor(9L) }
+    }
+
+    @Test
+    fun `pulled count in the result sums items across every page`() = runTest {
+        val item1 = mockk<com.aniki.anikiai.data.remote.SyncItemDto>(relaxed = true)
+        val item2 = mockk<com.aniki.anikiai.data.remote.SyncItemDto>(relaxed = true)
+        val item3 = mockk<com.aniki.anikiai.data.remote.SyncItemDto>(relaxed = true)
+        coEvery { api.pullSync(0L) } returns Response.success(pullWithItems(listOf(item1, item2), nextCursor = 5L, hasMore = true))
+        coEvery { api.pullSync(5L) } returns Response.success(pullWithItems(listOf(item3), nextCursor = 8L, hasMore = false))
+
+        val result = manager.runSync()
+
+        assertEquals(SyncResult.Success(pulled = 3, pushed = 0, conflicts = 0), result)
+    }
+
+    @Test
+    fun `cursor is still persisted exactly once even across multiple pull pages`() = runTest {
+        coEvery { api.pullSync(0L) } returns Response.success(emptyPull(nextCursor = 5L, hasMore = true))
+        coEvery { api.pullSync(5L) } returns Response.success(emptyPull(nextCursor = 9L, hasMore = false))
+
+        manager.runSync()
+
+        coVerify(exactly = 1) { cursorStore.setCursor(any()) }
+        coVerify(exactly = 0) { cursorStore.setCursor(5L) } // must not persist an intermediate page's cursor
+        coVerify(exactly = 1) { cursorStore.setCursor(9L) }
+    }
+
+    @Test
+    fun `401 on a later page still returns Unauthenticated without persisting a cursor`() = runTest {
+        coEvery { api.pullSync(0L) } returns Response.success(emptyPull(nextCursor = 5L, hasMore = true))
+        coEvery { api.pullSync(5L) } returns Response.error(401, "".toResponseBody(null))
+
+        val result = manager.runSync()
+
+        assertEquals(SyncResult.Unauthenticated, result)
+        coVerify(exactly = 0) { cursorStore.setCursor(any()) }
+    }
+
+    @Test
+    fun `each pulled page is merged before moving to the next page`() = runTest {
+        val item1 = mockk<com.aniki.anikiai.data.remote.SyncItemDto>(relaxed = true)
+        val item2 = mockk<com.aniki.anikiai.data.remote.SyncItemDto>(relaxed = true)
+        coEvery { api.pullSync(0L) } returns Response.success(pullWithItems(listOf(item1), nextCursor = 5L, hasMore = true))
+        coEvery { api.pullSync(5L) } returns Response.success(pullWithItems(listOf(item2), nextCursor = 9L, hasMore = false))
+
+        manager.runSync()
+
+        coVerifyOrder {
+            api.pullSync(0L)
+            repository.mergeItem(item1)
+            api.pullSync(5L)
+            repository.mergeItem(item2)
+        }
     }
 }

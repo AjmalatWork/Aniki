@@ -42,10 +42,19 @@ data class ItemEntity(
     val isStarred: Boolean = false,
     val summaryEditedByUser: Boolean = false,
     val tagsEditedByUser: Boolean = false,
+    val titleEditedByUser: Boolean = false,
+    // Local-only (not synced) -- caps the note-title backfill (work/NoteTitleBackfiller.kt) to
+    // one real Gemini attempt per note per device, so a note whose generated title stays stuck
+    // (malformed/empty LLM response) doesn't get re-billed against the daily cap every sync cycle.
+    val titleBackfillAttempted: Boolean = false,
     val createdAt: Long,                    // epoch millis
     val lastViewedAt: Long? = null,
     val lastShownAt: Long? = null,
     val updatedAt: Long,
     val deletedAt: Long? = null,
-    val dirty: Boolean = false              // reserved for future sync; just set true on write
+    val dirty: Boolean = false,             // reserved for future sync; just set true on write
+    // Local-only (not part of SyncItemDto/synced) -- each device backfills its own thumbnail
+    // lazily and independently; a shared/synced flag would just mean one device's failed attempt
+    // permanently stops every other device from ever trying. See ItemRepository.backfillThumbnails.
+    val thumbnailBackfillAttempted: Boolean = false
 )

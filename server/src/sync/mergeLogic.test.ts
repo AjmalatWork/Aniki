@@ -59,6 +59,7 @@ function baseItem(overrides: Partial<ItemDto> = {}): ItemDto {
     isStarred: false,
     summaryLocked: false,
     tagsLocked: false,
+    titleLocked: false,
     updatedAt: 1000,
     deletedAt: null,
     ...overrides,
@@ -82,6 +83,10 @@ test("itemContentEqual: differing entities (nested object) is not equal", () => 
 
 test("itemContentEqual: differing deletedAt (tombstone state) is not equal", () => {
   assert.equal(itemContentEqual(baseItem(), baseItem({ deletedAt: 5000 })), false);
+});
+
+test("itemContentEqual: differing titleLocked is not equal", () => {
+  assert.equal(itemContentEqual(baseItem(), baseItem({ titleLocked: true })), false);
 });
 
 test("itemContentEqual: differing updatedAt is not equal", () => {

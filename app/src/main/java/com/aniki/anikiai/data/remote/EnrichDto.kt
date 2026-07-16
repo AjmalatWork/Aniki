@@ -31,3 +31,9 @@ data class EnrichResponseDto(
 
 @Serializable
 data class EnrichErrorDto(val error: String)
+
+@Serializable
+data class ExtractThumbnailRequestDto(val sourceUrl: String)
+
+@Serializable
+data class ExtractThumbnailResponseDto(val thumbnailUrl: String?)
