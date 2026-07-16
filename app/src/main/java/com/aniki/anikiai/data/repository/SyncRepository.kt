@@ -24,8 +24,6 @@ class SyncRepository(
     private val ftsIndexer: FtsIndexer
 ) {
 
-    private val json = Json { ignoreUnknownKeys = true }
-
     // -----------------------------------------------------------------
     // Pull side: apply a pulled row against local state via decideMerge
     // -----------------------------------------------------------------
@@ -184,61 +182,6 @@ class SyncRepository(
         itemDao.clearAllEngagementEvents()
     }
 
-    // -----------------------------------------------------------------
-    // Entity <-> DTO mapping
-    // -----------------------------------------------------------------
-
-    private fun ItemEntity.toDto(): SyncItemDto = SyncItemDto(
-        id = id,
-        type = type,
-        sourceUrl = sourceUrl,
-        normalizedUrl = normalizedUrl,
-        title = title,
-        bodyText = bodyText,
-        summary = summary,
-        thumbnailUrl = thumbnailUrl,
-        category = category,
-        entities = entities?.let { runCatching { json.decodeFromString<SyncEntitiesDto>(it) }.getOrNull() },
-        eventDate = eventDate?.let { epochMillisToIsoDate(it) },
-        status = status,
-        isStarred = isStarred,
-        summaryLocked = summaryEditedByUser,
-        tagsLocked = tagsEditedByUser,
-        updatedAt = updatedAt,
-        deletedAt = deletedAt
-    )
-
-    private fun SyncItemDto.toEntity(dirty: Boolean): ItemEntity = ItemEntity(
-        id = id,
-        type = type,
-        sourceUrl = sourceUrl,
-        normalizedUrl = normalizedUrl,
-        title = title,
-        bodyText = bodyText,
-        summary = summary,
-        thumbnailUrl = thumbnailUrl,
-        category = category,
-        entities = entities?.let { json.encodeToString(SyncEntitiesDto.serializer(), it) },
-        eventDate = eventDate?.let { isoDateToEpochMillis(it) },
-        status = status,
-        isStarred = isStarred,
-        summaryEditedByUser = summaryLocked,
-        tagsEditedByUser = tagsLocked,
-        createdAt = updatedAt, // best-effort: server doesn't track a separate createdAt
-        updatedAt = updatedAt,
-        deletedAt = deletedAt,
-        dirty = dirty
-    )
-
-    private fun TagEntity.toDto(): SyncTagDto =
-        SyncTagDto(id = id, label = label, origin = origin, updatedAt = updatedAt, deletedAt = deletedAt)
-
-    private fun ItemTagCrossRef.toDto(): SyncItemTagDto =
-        SyncItemTagDto(itemId = itemId, tagId = tagId, updatedAt = updatedAt, deletedAt = deletedAt)
-
-    private fun EngagementEventEntity.toDto(): SyncEngagementEventDto =
-        SyncEngagementEventDto(id = id, itemId = itemId, eventType = eventType, value = value, createdAt = createdAt)
-
     private fun itemContentIdentical(local: ItemEntity, pulled: SyncItemDto): Boolean {
         return local.updatedAt == pulled.updatedAt &&
             local.type == pulled.type &&
@@ -263,10 +206,68 @@ class SyncRepository(
             local.origin == pulled.origin &&
             local.deletedAt == pulled.deletedAt
     }
-
-    private fun epochMillisToIsoDate(millis: Long): String =
-        java.time.Instant.ofEpochMilli(millis).atZone(ZoneOffset.UTC).toLocalDate().toString()
-
-    private fun isoDateToEpochMillis(iso: String): Long? =
-        runCatching { LocalDate.parse(iso).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli() }.getOrNull()
 }
+
+// -----------------------------------------------------------------
+// Entity <-> DTO mapping. Top-level (not repository members) so a DTO<->Entity round-trip test
+// can exercise them directly without standing up a real ItemDao — see SyncRepositoryMapperTest.
+// -----------------------------------------------------------------
+
+private val syncJson = Json { ignoreUnknownKeys = true }
+
+internal fun ItemEntity.toDto(): SyncItemDto = SyncItemDto(
+    id = id,
+    type = type,
+    sourceUrl = sourceUrl,
+    normalizedUrl = normalizedUrl,
+    title = title,
+    bodyText = bodyText,
+    summary = summary,
+    thumbnailUrl = thumbnailUrl,
+    category = category,
+    entities = entities?.let { runCatching { syncJson.decodeFromString<SyncEntitiesDto>(it) }.getOrNull() },
+    eventDate = eventDate?.let { epochMillisToIsoDate(it) },
+    status = status,
+    isStarred = isStarred,
+    summaryLocked = summaryEditedByUser,
+    tagsLocked = tagsEditedByUser,
+    updatedAt = updatedAt,
+    deletedAt = deletedAt
+)
+
+internal fun SyncItemDto.toEntity(dirty: Boolean): ItemEntity = ItemEntity(
+    id = id,
+    type = type,
+    sourceUrl = sourceUrl,
+    normalizedUrl = normalizedUrl,
+    title = title,
+    bodyText = bodyText,
+    summary = summary,
+    thumbnailUrl = thumbnailUrl,
+    category = category,
+    entities = entities?.let { syncJson.encodeToString(SyncEntitiesDto.serializer(), it) },
+    eventDate = eventDate?.let { isoDateToEpochMillis(it) },
+    status = status,
+    isStarred = isStarred,
+    summaryEditedByUser = summaryLocked,
+    tagsEditedByUser = tagsLocked,
+    createdAt = updatedAt, // best-effort: server doesn't track a separate createdAt
+    updatedAt = updatedAt,
+    deletedAt = deletedAt,
+    dirty = dirty
+)
+
+internal fun TagEntity.toDto(): SyncTagDto =
+    SyncTagDto(id = id, label = label, origin = origin, updatedAt = updatedAt, deletedAt = deletedAt)
+
+internal fun ItemTagCrossRef.toDto(): SyncItemTagDto =
+    SyncItemTagDto(itemId = itemId, tagId = tagId, updatedAt = updatedAt, deletedAt = deletedAt)
+
+internal fun EngagementEventEntity.toDto(): SyncEngagementEventDto =
+    SyncEngagementEventDto(id = id, itemId = itemId, eventType = eventType, value = value, createdAt = createdAt)
+
+internal fun epochMillisToIsoDate(millis: Long): String =
+    java.time.Instant.ofEpochMilli(millis).atZone(ZoneOffset.UTC).toLocalDate().toString()
+
+internal fun isoDateToEpochMillis(iso: String): Long? =
+    runCatching { LocalDate.parse(iso).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli() }.getOrNull()

@@ -9,9 +9,11 @@ import com.aniki.anikiai.data.repository.ItemRepository
 import com.aniki.anikiai.feed.FeedCandidate
 import com.aniki.anikiai.feed.buildFeed
 import com.aniki.anikiai.sync.SyncWorker
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 
 sealed interface FeedUiState {
@@ -51,9 +53,13 @@ class FeedViewModel(
         viewModelScope.launch {
             val snapshot = repository.getItemsWithTagsSnapshot()
             cachedWeights = repository.computeUserTagWeights()
-            val byId = snapshot.associateBy { it.item.id }
-            val ordered = buildFeed(snapshot.map { it.toCandidate() }, cachedWeights, System.currentTimeMillis())
-            val items = ordered.mapNotNull { byId[it.id] }
+            // Ranking is pure CPU work (sort + scoring pass) — off the main dispatcher so a large
+            // library doesn't jank the UI thread on every Feed open. Same result either way.
+            val items = withContext(Dispatchers.Default) {
+                val byId = snapshot.associateBy { it.item.id }
+                val ordered = buildFeed(snapshot.map { it.toCandidate() }, cachedWeights, System.currentTimeMillis())
+                ordered.mapNotNull { byId[it.id] }
+            }
             _state.value = if (items.isEmpty()) FeedUiState.Empty else FeedUiState.Content(items)
             Timber.i("feed opened: candidates=%d", items.size)
         }

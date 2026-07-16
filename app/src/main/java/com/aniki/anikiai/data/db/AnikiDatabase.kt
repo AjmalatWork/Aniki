@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         EngagementEventEntity::class,
         ItemFtsEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class AnikiDatabase : RoomDatabase() {
@@ -93,13 +93,28 @@ abstract class AnikiDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Purely additive perf migration (no data/behavior change): indexes on items.normalizedUrl
+         * (dedupe lookup on every save), items.createdAt (default sort order), items.status
+         * (pending-items reconciliation scan) — all previously unindexed full-table scans — plus
+         * item_tags.tagId, which KSP flags as uncovered for the ItemWithTags @Relation join.
+         */
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_items_normalizedUrl ON items(normalizedUrl)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_items_createdAt ON items(createdAt)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_items_status ON items(status)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_item_tags_tagId ON item_tags(tagId)")
+            }
+        }
+
         fun getInstance(context: Context): AnikiDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     AnikiDatabase::class.java,
                     "aniki.db"
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { INSTANCE = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { INSTANCE = it }
             }
         }
     }

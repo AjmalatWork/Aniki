@@ -1,6 +1,7 @@
 package com.aniki.anikiai.data.db
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 object ItemType {
@@ -15,7 +16,16 @@ object ItemStatus {
     const val NEEDS_ATTENTION = "NEEDS_ATTENTION"
 }
 
-@Entity(tableName = "items")
+@Entity(
+    tableName = "items",
+    // normalizedUrl backs the dedupe lookup on every save; createdAt backs the default sort
+    // order; status backs the pending-items reconciliation scan. All previously unindexed.
+    indices = [
+        Index(value = ["normalizedUrl"]),
+        Index(value = ["createdAt"]),
+        Index(value = ["status"])
+    ]
+)
 data class ItemEntity(
     @PrimaryKey val id: String,             // UUID, generated client-side
     val type: String,                       // "WEB_ARTICLE" | "YOUTUBE_VIDEO" | "NOTE"
