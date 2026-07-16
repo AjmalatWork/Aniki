@@ -1,9 +1,21 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
     alias(libs.plugins.google.services)
+}
+
+// Release signing credentials live in a git-ignored keystore.properties (see
+// keystore.properties.example), never hardcoded here. Absent locally for anyone who hasn't set
+// up release signing -- only release builds need it, so debug builds still work without it.
+val keystoreProperties = Properties().apply {
+    val propertiesFile = rootProject.file("keystore.properties")
+    if (propertiesFile.exists()) {
+        propertiesFile.inputStream().use { load(it) }
+    }
 }
 
 android {
@@ -22,8 +34,29 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (keystoreProperties.isNotEmpty()) {
+            create("release") {
+                storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            // Emulator reaches the host's localhost via the 10.0.2.2 alias automatically; a
+            // physical device needs `adb reverse tcp:4000 tcp:4000` first. See
+            // network_security_config.xml for the matching cleartext allowlist.
+            buildConfigField("String", "BASE_URL", "\"http://127.0.0.1:4000/\"")
+        }
         release {
+            buildConfigField("String", "BASE_URL", "\"https://aniki-xqm9.onrender.com/\"")
+            if (keystoreProperties.isNotEmpty()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             optimization {
                 enable = false
             }
@@ -35,6 +68,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

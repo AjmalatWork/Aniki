@@ -17,6 +17,11 @@ local.properties
 .claude/settings.local.json
 scripts/.aniki-dev-server.pid
 
+# Android release signing
+keystore.properties
+*.jks
+app/release/
+
 # server/ (Node backend)
 server/node_modules
 server/dist
