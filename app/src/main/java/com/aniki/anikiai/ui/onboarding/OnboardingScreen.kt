@@ -97,8 +97,9 @@ fun OnboardingScreen(
 
                 Text(
                     text = buildAnnotatedString {
-                        append("Aniki")
-                        withStyle(SpanStyle(color = SealDark)) { append(" AI") }
+                        withStyle(SpanStyle(color = SealDark)) { append("A") }
+                        append("nik")
+                        withStyle(SpanStyle(color = SealDark)) { append("i") }
                     },
                     style = MaterialTheme.typography.displaySmall,
                     color = Paper
