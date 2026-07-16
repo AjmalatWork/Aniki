@@ -78,8 +78,11 @@ would be jarring.
   page, OG-image candidate) must go through `security/urlGuard.ts`'s `assertSafeUrl` — rejects
   non-http(s) schemes and private/loopback/link-local-resolving hosts.
 - **Local-only vs synced fields**: bookkeeping flags for per-device backfill attempts
-  (`thumbnailBackfillAttempted`, `titleBackfillAttempted`) are deliberately *not* synced — each
-  device backfills independently, so one device's failed attempt doesn't block another's.
+  (`thumbnailBackfillAttempted`, `titleBackfillAttempted`, `isDemo`, `demoLandingAnimationShown`)
+  are deliberately *not* synced — each device backfills/behaves independently, so one device's
+  state doesn't affect another's. `isDemo` (the onboarding demo item, see below) additionally
+  gates sync (never pushed) and enrichment (never real-enriched) but *not* Library/Feed/search
+  visibility — it's otherwise a normal, user-deletable item.
 - **Testing**: pure-logic modules stay Compose/DB-free for easy unit testing (`feed/Ranking.kt`,
   `feed/TagWeights.kt`, `feed/PullQuote.kt`, backend `sync/mergeLogic.ts`). Backend tests use
   Node's built-in `node:test` + `mock.module()` for external deps (no Jest/Vitest). Android tests
@@ -87,25 +90,40 @@ would be jarring.
 
 ## 5. Current state / what's done
 
-MVP (6 slices) is complete, functionally and visually. Since then, on branch
-`hardening/non-functional-batch` (not yet merged to `main`):
+MVP (6 slices) is complete, functionally and visually. `hardening/non-functional-batch` was
+fast-forward merged into `main` (2026-07-16) and the branch was deleted — everything below is on
+`main` now. All of it is verified end-to-end on a physical Pixel 8 Pro against real Postgres and a
+real Gemini key.
 
-- Non-functional hardening batch: Room indexes, single-flight Gemini cache, error middleware,
-  test coverage additions (backend went from 0 tests to a real suite).
-- Functional hardening batch: Gemini daily-cap now counts retries correctly, Express body limit
+- **Non-functional hardening**: Room indexes, single-flight Gemini cache, error middleware, test
+  coverage additions (backend went from 0 tests to a real suite).
+- **Functional hardening**: Gemini daily-cap now counts retries correctly, Express body limit
   raised to 2mb, SSRF guard on `/enrich`, per-IP rate limiting, tombstone GC, paginated sync pulls.
-- 4-item polish pass: Feed swipe hint (first-run + idle re-trigger, first session only), Library
-  thumbnails (real OG image → on-palette monogram → seal glyph for notes, with lazy backfill),
-  Feed article/note typographic hero (pull-quote, no image), Gemini-generated + user-editable note
-  titles (with throttled backfill for existing notes).
-
-All of the above is verified end-to-end on a physical Pixel 8 Pro against real Postgres and a real
-Gemini key — including a live Room migration (v4→v6) with zero data loss on existing data.
-Everything is committed (single commit `2f2c046` on top of the two hardening commits).
+- **4-item polish pass**: Feed swipe hint (first-run + idle re-trigger, first session only, now
+  also suppressed on the last/only Feed item), Library thumbnails (real OG image → on-palette
+  monogram → note glyph, with lazy backfill), Feed article/note typographic hero (pull-quote, no
+  image), Gemini-generated + user-editable note titles (with throttled backfill for existing notes).
+- **Library/Feed polish pass 2**: Library cards dropped the overlaid type-label text for a small
+  below-image icon (globe for articles, reused `PlayArrow` for video, none for notes); the note
+  thumbnail now mirrors the app launcher icon's stamp treatment (`SealStampGradient` badge +
+  light pencil glyph, `ui/theme/Components.kt`); Feed's bottom zone (hint/text/source/tags) now
+  pulls from a shared `Spacing` scale (`ui/theme/Spacing.kt`) and one `BOTTOM_ZONE_INSET` constant.
+- **Onboarding "how sharing works" step**: a new `RootState.SHARE_TIP` (`ui/AppRoot.kt`) fires
+  after sign-in/guest, before MAIN — a two-screen in-app coach-mark
+  (`ui/onboarding/ShareTipScreen.kt`: explain → "your share menu is about to open") primes the
+  user, then fires a real `ACTION_SEND` with hardcoded demo content ("Welcome to Aniki" + fixed
+  body, `share/OnboardingDemoContent.kt`) so Aniki appears as a genuine share-sheet target. Demo
+  content is detected via an invisible zero-width-space marker in `ShareReceiverActivity`, flows
+  through the normal share-receive path, but is flagged `ItemEntity.isDemo` — skips real
+  enrichment/Gemini entirely (saved pre-`ENRICHED`) and is never synced, while staying otherwise
+  visible/deletable in Library/Feed/search like any real item. Every share-sheet outcome resumes
+  straight to the Feed (no third "result" screen); if the demo item was received, Feed plays a
+  one-time Seal-glow landing pulse (`ItemEntity.demoLandingAnimationShown` persists that it never
+  replays). Settings shows a persistent one-line reminder below the account line (no new section).
+  Room is now at schema version 8.
 
 ## 6. Known open items / pending decisions
 
-- **Branch not merged to `main`** — still sitting on `hardening/non-functional-batch`.
 - **Not deployed anywhere** — backend/Postgres are local-dev-only; deploy target still TBD
   (Render suggested as a free-tier option, not decided).
 - **Backend has no linting and no CI** — `node:test` suite exists and passes, but nothing runs it
@@ -113,14 +131,21 @@ Everything is committed (single commit `2f2c046` on top of the two hardening com
 - **Backend in-memory state won't survive horizontal scaling** — content cache, rate limiter, and
   metrics are all per-process. Fine for one instance, would need a shared store (Redis/Postgres)
   before running more than one.
-- **No `CLAUDE.md` exists yet.** This file (`context_for_new_session.md`) is *not* auto-loaded —
-  a new session needs to be explicitly pointed at it. Whether to add a minimal `CLAUDE.md` that
-  just says "read context_for_new_session.md first" is an open question for the user to confirm.
+- **Direct Share shortcut (sharing-shortcuts) is not implemented.** The onboarding share-tip step
+  was explicitly written to not depend on it — Aniki just appears in the normal app row of the
+  share sheet rather than the Direct Share strip. Fine as-is; only relevant if that feature is
+  ever built later.
 
 ## 7. Recent context
 
-- Just finished and committed the functional hardening batch + 4-item polish pass in one commit.
+- Just finished and committed the onboarding "how sharing works" step (commit `e7b54ac` on
+  `main`), including a live iteration cycle with the user (screenshots each round) that changed
+  the icons/copy/structure significantly from the original written brief — see git log for the
+  full sequence if you need the "why" behind an earlier discarded approach (e.g. the demo item
+  was originally going to be hidden from Library/Feed entirely; the user asked for it to be fully
+  visible so they can see what happened and delete it manually).
 - Backend dev server + Postgres were both running locally during verification; remember to use
   `Aniki Dev Toggle.bat` (or `docker ps` + `npm run dev` manually) to bring them back up in a new
   session before testing anything that touches `/enrich` or `/sync`.
-- This file was just created for the first time this session.
+- `CLAUDE.md` now exists and points here — this file no longer needs to be manually referenced by
+  the user at the start of a session.
