@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         EngagementEventEntity::class,
         ItemFtsEntity::class
     ],
-    version = 6,
+    version = 8,
     exportSchema = false
 )
 abstract class AnikiDatabase : RoomDatabase() {
@@ -136,6 +136,31 @@ abstract class AnikiDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Adds isDemo (local-only, not synced): flags the onboarding "how sharing works" demo
+         * item (ui/onboarding/ShareTipScreen.kt). It's otherwise a normal, visible item -- isDemo
+         * only gates sync and enrichment, not Library/Feed/search visibility. Existing rows
+         * default to 0 -- correct, since no demo item could have existed before this feature
+         * shipped.
+         */
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE items ADD COLUMN isDemo INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * Adds demoLandingAnimationShown (local-only, not synced): whether the Feed's one-time
+         * "you just shared this" landing animation has already played for the onboarding demo
+         * item. Existing rows default to 0 -- harmless for every non-demo row, since the flag is
+         * only ever read/written when isDemo is true.
+         */
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE items ADD COLUMN demoLandingAnimationShown INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getInstance(context: Context): AnikiDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -143,7 +168,8 @@ abstract class AnikiDatabase : RoomDatabase() {
                     AnikiDatabase::class.java,
                     "aniki.db"
                 ).addMigrations(
-                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6
+                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
+                    MIGRATION_6_7, MIGRATION_7_8
                 ).build().also { INSTANCE = it }
             }
         }

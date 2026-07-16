@@ -42,6 +42,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.aniki.anikiai.data.remote.AnikiApi
 import com.aniki.anikiai.ui.theme.Ink
 import com.aniki.anikiai.ui.theme.Kon
+import com.aniki.anikiai.ui.theme.Muted
 import com.aniki.anikiai.ui.theme.Paper
 import com.aniki.anikiai.ui.theme.Seal
 import kotlinx.coroutines.launch
@@ -104,6 +105,15 @@ fun SettingsScreen(
                 text = if (isSignedIn) userEmail ?: "Signed in" else "Using Aniki as a guest",
                 style = MaterialTheme.typography.bodyMedium,
                 color = Kon
+            )
+            Spacer(Modifier.height(6.dp))
+            // Persistent reminder of the onboarding "how sharing works" step (ShareTipScreen) --
+            // that's seen once, so this stays discoverable afterward. Plain glanceable text right
+            // below the account line, deliberately not its own section or a tappable row.
+            Text(
+                text = "Tip: Long-press Aniki in your phone's share menu to pin it to the top.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Muted
             )
 
             Spacer(Modifier.height(24.dp))

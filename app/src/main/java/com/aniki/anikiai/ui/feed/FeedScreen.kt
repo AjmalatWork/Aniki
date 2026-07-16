@@ -155,11 +155,17 @@ fun FeedScreen(
 
                 VerticalPager(state = pagerState, modifier = modifier.fillMaxSize().background(Ink)) { page ->
                     val itemWithTags = items[page]
+                    // No "swipe up for next" text/animation on the last item -- there's nothing
+                    // further to swipe to (this also covers the single-item Feed, where the only
+                    // page is always the last one).
+                    val isLastPage = page == items.lastIndex
                     FeedCard(
                         itemWithTags = itemWithTags,
                         contentPadding = contentPadding,
-                        showHint = showHint && page == pagerState.settledPage,
+                        showHint = showHint && page == pagerState.settledPage && !isLastPage,
                         hintTrigger = hintTrigger,
+                        playLandingAnimation = itemWithTags.item.id == s.demoLandingItemId,
+                        onLandingAnimationPlayed = viewModel::onLandingAnimationPlayed,
                         onInteraction = viewModel::onInteraction,
                         onOpen = {
                             viewModel.onOpen(itemWithTags.item.id)
@@ -187,6 +193,8 @@ private fun FeedCard(
     contentPadding: PaddingValues,
     showHint: Boolean,
     hintTrigger: Int,
+    playLandingAnimation: Boolean,
+    onLandingAnimationPlayed: () -> Unit,
     onInteraction: () -> Unit,
     onOpen: () -> Unit,
     onToggleStar: () -> Unit,
@@ -221,6 +229,19 @@ private fun FeedCard(
             0f,
             animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)
         )
+    }
+
+    // One-time "you just shared this" confirmation for the onboarding demo item: a brief Seal
+    // glow pulse over the whole card, under a second, using the same Animatable idiom as the
+    // peek-and-settle hint above rather than a new animation system. Keyed on the item's id (not
+    // just the boolean) so it can't be mistaken for a replay if this composable is reused for a
+    // different item at the same pager position.
+    val landingGlow = remember { Animatable(0f) }
+    LaunchedEffect(itemWithTags.item.id, playLandingAnimation) {
+        if (!playLandingAnimation) return@LaunchedEffect
+        landingGlow.animateTo(0.35f, animationSpec = tween(durationMillis = 220))
+        landingGlow.animateTo(0f, animationSpec = tween(durationMillis = 500))
+        onLandingAnimationPlayed()
     }
 
     Box(
@@ -411,6 +432,14 @@ private fun FeedCard(
                     color = Paper.copy(alpha = 0.55f)
                 )
             }
+        }
+
+        if (landingGlow.value > 0f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(SealDark.copy(alpha = landingGlow.value))
+            )
         }
     }
 }

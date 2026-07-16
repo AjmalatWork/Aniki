@@ -66,15 +66,58 @@ class ItemRepository(
     /**
      * Persists a shared link/text. If an existing, non-deleted item already has the same
      * normalizedUrl, the save is treated as a duplicate and only its updatedAt is touched.
+     *
+     * [isDemo] is set only by the onboarding "how sharing works" step (ShareTipScreen fires a
+     * real ACTION_SEND with demo content through this exact same path, per the "reuse the
+     * existing share-receive path" requirement). By design a demo save is otherwise a normal,
+     * visible item -- it shows up in Library/Feed/search and the user can delete it manually,
+     * exactly like any other note, so they can see what onboarding's demo share actually did.
+     * isDemo only gates two things: it skips PENDING/real enrichment (never queued -- see
+     * ShareReceiverActivity, it's not real content worth spending a Gemini call on) and is never
+     * marked dirty (never synced -- an onboarding artifact shouldn't propagate to the server or
+     * other devices). Dedupes against any prior demo item by [ItemDao.getDemoItem] rather than by
+     * normalizedUrl (demo content is always a plain note, so normalizedUrl is null) -- this keeps
+     * retries from piling up duplicate demo rows.
      */
     suspend fun saveSharedContent(
         type: String,
         sourceUrl: String?,
         normalizedUrl: String?,
         title: String,
-        bodyText: String? = null
+        bodyText: String? = null,
+        isDemo: Boolean = false
     ): ItemEntity {
         val now = System.currentTimeMillis()
+
+        if (isDemo) {
+            val existingDemo = itemDao.getDemoItem()
+            if (existingDemo != null) {
+                val touched = existingDemo.copy(title = title, bodyText = bodyText, updatedAt = now)
+                itemDao.updateItem(touched)
+                syncFtsRow(touched.id)
+                return touched
+            }
+            val demoItem = ItemEntity(
+                id = UUID.randomUUID().toString(),
+                type = type,
+                sourceUrl = sourceUrl,
+                normalizedUrl = null,
+                title = title,
+                bodyText = bodyText,
+                summary = null,
+                thumbnailUrl = null,
+                category = null,
+                eventDate = null,
+                status = ItemStatus.ENRICHED,
+                createdAt = now,
+                updatedAt = now,
+                dirty = false,
+                isDemo = true
+            )
+            itemDao.insertItem(demoItem)
+            syncFtsRow(demoItem.id)
+            return demoItem
+        }
 
         if (normalizedUrl != null) {
             val existing = itemDao.getItemByNormalizedUrl(normalizedUrl)
@@ -105,6 +148,9 @@ class ItemRepository(
         syncFtsRow(item.id)
         return item
     }
+
+    /** Marks the Feed's one-time demo-item landing animation played (see [ItemEntity.isDemo]). */
+    suspend fun markDemoLandingAnimationShown(id: String) = itemDao.markDemoLandingAnimationShown(id)
 
     suspend fun createNote(title: String?, body: String): ItemEntity {
         val now = System.currentTimeMillis()

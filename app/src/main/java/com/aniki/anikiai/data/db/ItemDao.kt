@@ -53,6 +53,20 @@ interface ItemDao {
     @Query("SELECT * FROM items WHERE deletedAt IS NULL ORDER BY createdAt DESC")
     fun observeAllItems(): Flow<List<ItemEntity>>
 
+    /**
+     * The onboarding demo item (see ItemEntity.isDemo), if it's ever been created on this device
+     * and not since deleted. By design it's a normal, visible, user-deletable item in Library and
+     * Feed (so the user can see exactly what onboarding's demo share did) -- isDemo only ever
+     * gates sync (never pushed) and enrichment (never real-enriched), not visibility.
+     */
+    @Query("SELECT * FROM items WHERE isDemo = 1 AND deletedAt IS NULL LIMIT 1")
+    suspend fun getDemoItem(): ItemEntity?
+
+    /** Marks the Feed's one-time demo-item landing animation played, so it never replays --
+     *  called once, from FeedViewModel.refresh(), the first time it decides to animate the item. */
+    @Query("UPDATE items SET demoLandingAnimationShown = 1 WHERE id = :id")
+    suspend fun markDemoLandingAnimationShown(id: String)
+
     /** Items saved locally but never enqueued for enrichment (process died between the write and the enqueue call). */
     @Query("SELECT id FROM items WHERE status = 'PENDING' AND deletedAt IS NULL")
     suspend fun getPendingItemIds(): List<String>
@@ -77,12 +91,15 @@ interface ItemDao {
     /** Notes enriched before title generation existed, whose title is still the creation-time
      *  truncated-body-text stub (see ItemRepository.createNote) -- the note-title backfill's
      *  candidate pool (see work/NoteTitleBackfiller.kt). SQLite's substr(x,1,60) matches Kotlin's
-     *  String.take(60) exactly, including the shorter-than-60 case. */
+     *  String.take(60) exactly, including the shorter-than-60 case. The onboarding demo item is
+     *  already excluded by construction (its hardcoded title never equals its body's first 60
+     *  chars -- see OnboardingDemoContent), but isDemo = 0 is kept as an explicit second guard so
+     *  it can never be picked up here even if that content ever changes. */
     @Query(
         """
         SELECT * FROM items
         WHERE type = 'NOTE' AND status = 'ENRICHED' AND titleEditedByUser = 0
-          AND titleBackfillAttempted = 0 AND deletedAt IS NULL
+          AND titleBackfillAttempted = 0 AND deletedAt IS NULL AND isDemo = 0
           AND title = substr(bodyText, 1, 60)
         ORDER BY createdAt ASC
         """
@@ -162,7 +179,10 @@ interface ItemDao {
     )
     fun observeActiveTagsByUsage(): Flow<List<TagEntity>>
 
-    @Query("SELECT * FROM items WHERE dirty = 1")
+    // isDemo items are never marked dirty in the first place (see ItemRepository.saveSharedContent's
+    // isDemo branch), but this filter is a second guard so the onboarding demo item can never reach
+    // the server even if that invariant is ever broken elsewhere.
+    @Query("SELECT * FROM items WHERE dirty = 1 AND isDemo = 0")
     suspend fun getDirtyItems(): List<ItemEntity>
 
     @Query("UPDATE items SET dirty = 0 WHERE id = :id")
@@ -234,8 +254,9 @@ interface ItemDao {
     suspend fun clearEngagementEventDirty(id: String)
 
     // --- Guest -> account migration: mark everything dirty so the next sync pushes it all ---
+    // (isDemo excluded -- the onboarding demo item must never be pushed to the server)
 
-    @Query("UPDATE items SET dirty = 1")
+    @Query("UPDATE items SET dirty = 1 WHERE isDemo = 0")
     suspend fun markAllItemsDirty()
 
     @Query("UPDATE tags SET dirty = 1")

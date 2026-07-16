@@ -24,7 +24,14 @@ private const val HINT_AUTO_DISMISS_MS = 3_000L
 sealed interface FeedUiState {
     data object Loading : FeedUiState
     data object Empty : FeedUiState
-    data class Content(val items: List<ItemWithTags>) : FeedUiState
+    /**
+     * @param demoLandingItemId the onboarding demo item's id, only on the one Feed session where
+     *   it should play its one-time "you just shared this" landing animation (see
+     *   FeedViewModel.refresh()); null otherwise, including every later session. Cleared to null
+     *   by [FeedViewModel.onLandingAnimationPlayed] once FeedCard finishes playing it, so
+     *   scrolling away and back within the same session doesn't replay it either.
+     */
+    data class Content(val items: List<ItemWithTags>, val demoLandingItemId: String? = null) : FeedUiState
 }
 
 /**
@@ -148,8 +155,31 @@ class FeedViewModel(
                 val ordered = buildFeed(snapshot.map { it.toCandidate() }, cachedWeights, System.currentTimeMillis())
                 ordered.mapNotNull { byId[it.id] }
             }
-            _state.value = if (items.isEmpty()) FeedUiState.Empty else FeedUiState.Content(items)
+            // The onboarding demo item's one-time landing animation: eligible exactly once ever,
+            // the first refresh() that sees it un-animated. Persisted immediately (not deferred to
+            // FeedCard playing it) so a re-entry into Feed before this session ends, or a process
+            // death mid-animation, can never re-trigger it -- only this in-memory state's copy of
+            // demoLandingItemId (cleared by onLandingAnimationPlayed) controls whether it plays
+            // again later *within* this same session.
+            val demoLandingItemId = items.firstOrNull { it.item.isDemo && !it.item.demoLandingAnimationShown }?.item?.id
+            if (demoLandingItemId != null) {
+                repository.markDemoLandingAnimationShown(demoLandingItemId)
+            }
+            _state.value = if (items.isEmpty()) {
+                FeedUiState.Empty
+            } else {
+                FeedUiState.Content(items, demoLandingItemId)
+            }
             Timber.i("feed opened: candidates=%d", items.size)
+        }
+    }
+
+    /** FeedCard finished playing the demo item's landing animation -- clear it so scrolling away
+     *  and back within this same session doesn't replay it. */
+    fun onLandingAnimationPlayed() {
+        val current = _state.value
+        if (current is FeedUiState.Content && current.demoLandingItemId != null) {
+            _state.value = current.copy(demoLandingItemId = null)
         }
     }
 

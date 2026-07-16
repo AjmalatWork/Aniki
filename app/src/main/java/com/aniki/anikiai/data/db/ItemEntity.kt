@@ -56,5 +56,17 @@ data class ItemEntity(
     // Local-only (not part of SyncItemDto/synced) -- each device backfills its own thumbnail
     // lazily and independently; a shared/synced flag would just mean one device's failed attempt
     // permanently stops every other device from ever trying. See ItemRepository.backfillThumbnails.
-    val thumbnailBackfillAttempted: Boolean = false
+    val thumbnailBackfillAttempted: Boolean = false,
+    // Local-only (not part of SyncItemDto/synced) -- flags the onboarding "how sharing works"
+    // demo item. It's otherwise a normal, visible, user-deletable Library/Feed/search item (so
+    // the user can see what the demo share actually did); isDemo only gates sync (never pushed)
+    // and enrichment (never real-enriched -- see share/OnboardingDemoContent.kt and
+    // ui/onboarding/ShareTipScreen.kt). Only ever set true by ItemRepository.saveSharedContent's
+    // isDemo branch.
+    val isDemo: Boolean = false,
+    // Local-only (not part of SyncItemDto/synced) -- whether the Feed's one-time "you just shared
+    // this" landing animation has already played for this item. Only ever meaningful when isDemo
+    // is true; see FeedViewModel.refresh(), which sets this the moment it decides to animate the
+    // item so a later refresh() (re-entering Feed) or a fresh app launch never replays it.
+    val demoLandingAnimationShown: Boolean = false
 )

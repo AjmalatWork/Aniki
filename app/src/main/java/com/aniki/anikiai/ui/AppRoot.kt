@@ -20,9 +20,10 @@ import com.aniki.anikiai.data.remote.NetworkClient
 import com.aniki.anikiai.sync.SyncWorker
 import com.aniki.anikiai.ui.navigation.AnikiNavHost
 import com.aniki.anikiai.ui.onboarding.OnboardingScreen
+import com.aniki.anikiai.ui.onboarding.ShareTipScreen
 import kotlinx.coroutines.launch
 
-private enum class RootState { LOADING, ONBOARDING, MAIN }
+private enum class RootState { LOADING, ONBOARDING, SHARE_TIP, MAIN }
 
 @Composable
 fun AppRoot() {
@@ -48,7 +49,7 @@ fun AppRoot() {
             onContinueAsGuest = {
                 scope.launch {
                     authPreferences.setGuestModeChosen()
-                    state = RootState.MAIN
+                    state = RootState.SHARE_TIP
                 }
             },
             onSignedIn = {
@@ -59,9 +60,17 @@ fun AppRoot() {
                         authPreferences.setGuestMigrationCompleted()
                         SyncWorker.enqueueOneTime(appContext)
                     }
-                    state = RootState.MAIN
+                    state = RootState.SHARE_TIP
                 }
             }
+        )
+
+        // Only reachable via ONBOARDING above -- a cold start for an already-onboarded user
+        // (signedIn || guestChosen, checked in the LaunchedEffect) always routes straight to
+        // MAIN, so this step is inherently one-time per install without needing its own
+        // "seen it" flag.
+        RootState.SHARE_TIP -> ShareTipScreen(
+            onDone = { state = RootState.MAIN }
         )
 
         RootState.MAIN -> AnikiNavHost(
