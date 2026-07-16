@@ -15,6 +15,7 @@
 local.properties
 .kotlin
 .claude/settings.local.json
+scripts/.aniki-dev-server.pid
 
 # server/ (Node backend)
 server/node_modules
