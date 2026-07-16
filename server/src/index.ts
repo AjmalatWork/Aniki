@@ -1,12 +1,13 @@
-import express, { type Request, type Response } from "express";
+import express, { type NextFunction, type Request, type Response } from "express";
+import helmet from "helmet";
 import { accountRouter } from "./account/routes.js";
 import { config } from "./config.js";
 import { extractArticle } from "./extract/article.js";
 import { extractYouTube } from "./extract/youtube.js";
 import { enrichWithGemini } from "./gemini.js";
-import { getCached, hashContent, setCached } from "./cache.js";
+import { getOrCompute, hashContent } from "./cache.js";
 import { getCallLimiterSnapshot, tryConsumeGeminiCall } from "./callLimiter.js";
-import { getMetricsSnapshot, recordRequest } from "./metrics.js";
+import { getMetricsSnapshot, logAndRecord } from "./metrics.js";
 import { syncRouter } from "./sync/routes.js";
 import {
   EnrichmentError,
@@ -18,6 +19,7 @@ import {
 } from "./types.js";
 
 const app = express();
+app.use(helmet());
 app.use(express.json());
 
 app.get("/health", (_req: Request, res: Response) => {
@@ -49,13 +51,12 @@ app.post("/enrich", async (req: Request, res: Response) => {
     const extracted = await extractContent(type, sourceUrl, bodyText);
     const hash = hashContent(extracted.content);
 
-    const cached = getCached(hash);
-    const cacheHit = cached !== undefined;
-    if (!cacheHit && !tryConsumeGeminiCall()) {
-      throw new QuotaExceededError("Daily enrichment call limit reached — try again tomorrow");
-    }
-    const llmResult = cached ?? (await enrichWithGemini(type, extracted.content));
-    if (!cacheHit) setCached(hash, llmResult);
+    const { result: llmResult, cacheHit } = await getOrCompute(hash, async () => {
+      if (!tryConsumeGeminiCall()) {
+        throw new QuotaExceededError("Daily enrichment call limit reached — try again tomorrow");
+      }
+      return enrichWithGemini(type, extracted.content);
+    });
 
     const response: EnrichResponse = {
       id,
@@ -68,12 +69,15 @@ app.post("/enrich", async (req: Request, res: Response) => {
       eventDate: llmResult.eventDate,
     };
 
-    logRequest(req, type, cacheHit, Date.now() - start);
-    recordRequest("/enrich", Date.now() - start, false);
+    logAndRecord(requestLogLine(req, type, cacheHit, Date.now() - start), "/enrich", Date.now() - start, false);
     res.status(200).json(response);
   } catch (err) {
-    logRequest(req, type, false, Date.now() - start, err);
-    recordRequest("/enrich", Date.now() - start, true);
+    logAndRecord(
+      requestLogLine(req, type, false, Date.now() - start, err),
+      "/enrich",
+      Date.now() - start,
+      true
+    );
     if (err instanceof QuotaExceededError) {
       res.status(429).json({ error: err.message });
       return;
@@ -103,19 +107,31 @@ async function extractContent(
   }
 }
 
-function logRequest(
+function requestLogLine(
   req: Request,
   type: string,
   cacheHit: boolean,
   latencyMs: number,
   err?: unknown
-): void {
+): string {
   const status = err ? "error" : cacheHit ? "cache hit" : "cache miss";
   const errSuffix = err ? ` error="${(err as Error).message}"` : "";
-  console.log(
-    `[${req.method} ${req.path}] type=${type} ${status} latency=${latencyMs}ms${errSuffix}`
-  );
+  return `[${req.method} ${req.path}] type=${type} ${status} latency=${latencyMs}ms${errSuffix}`;
 }
+
+// Terminal error handler: anything thrown outside a route's own try/catch (most notably
+// express.json() rejecting a malformed request body) previously fell through to Express's
+// default HTML error page, which the Android client's JSON-only Response<T> handling can't
+// parse. This keeps every error response the same shape the client already expects.
+app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  const status =
+    (err as { status?: number; statusCode?: number } | null)?.status ??
+    (err as { status?: number; statusCode?: number } | null)?.statusCode ??
+    500;
+  const message = err instanceof Error ? err.message : "Unexpected server error";
+  console.log(`[unhandled] status=${status} error="${message}"`);
+  res.status(status).json({ error: message });
+});
 
 app.listen(config.port, () => {
   console.log(`Aniki enrichment server listening on :${config.port}`);

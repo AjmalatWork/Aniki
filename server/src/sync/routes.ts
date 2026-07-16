@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { requireAuth } from "../auth/middleware.js";
-import { recordRequest } from "../metrics.js";
+import { logAndRecord } from "../metrics.js";
 import { pullChanges, pushChanges } from "./repo.js";
 import type { PushRequest } from "./types.js";
 
@@ -18,16 +18,22 @@ syncRouter.get("/", async (req: Request, res: Response) => {
   const start = Date.now();
   try {
     const result = await pullChanges(req.uid!, since);
-    console.log(
+    logAndRecord(
       `[GET /sync] uid=${req.uid} since=${since} items=${result.items.length} tags=${result.tags.length} ` +
         `itemTags=${result.itemTags.length} events=${result.engagementEvents.length} nextCursor=${result.nextCursor} ` +
-        `latency=${Date.now() - start}ms`
+        `latency=${Date.now() - start}ms`,
+      "GET /sync",
+      Date.now() - start,
+      false
     );
-    recordRequest("GET /sync", Date.now() - start, false);
     res.json(result);
   } catch (err) {
-    console.log(`[GET /sync] uid=${req.uid} error="${(err as Error).message}" latency=${Date.now() - start}ms`);
-    recordRequest("GET /sync", Date.now() - start, true);
+    logAndRecord(
+      `[GET /sync] uid=${req.uid} error="${(err as Error).message}" latency=${Date.now() - start}ms`,
+      "GET /sync",
+      Date.now() - start,
+      true
+    );
     res.status(500).json({ error: "Sync pull failed" });
   }
 });
@@ -44,16 +50,22 @@ syncRouter.post("/", async (req: Request, res: Response) => {
   const start = Date.now();
   try {
     const result = await pushChanges(req.uid!, request);
-    console.log(
+    logAndRecord(
       `[POST /sync] uid=${req.uid} items=${request.items.length} tags=${request.tags.length} ` +
         `itemTags=${request.itemTags.length} events=${request.engagementEvents.length} ` +
-        `nextCursor=${result.nextCursor} latency=${Date.now() - start}ms`
+        `nextCursor=${result.nextCursor} latency=${Date.now() - start}ms`,
+      "POST /sync",
+      Date.now() - start,
+      false
     );
-    recordRequest("POST /sync", Date.now() - start, false);
     res.json(result);
   } catch (err) {
-    console.log(`[POST /sync] uid=${req.uid} error="${(err as Error).message}" latency=${Date.now() - start}ms`);
-    recordRequest("POST /sync", Date.now() - start, true);
+    logAndRecord(
+      `[POST /sync] uid=${req.uid} error="${(err as Error).message}" latency=${Date.now() - start}ms`,
+      "POST /sync",
+      Date.now() - start,
+      true
+    );
     res.status(500).json({ error: "Sync push failed" });
   }
 });

@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg";
 import { pool } from "../db/pool.js";
+import { decideUpsert, itemContentEqual, itemTagContentEqual, tagContentEqual } from "./mergeLogic.js";
 import type {
   Ack,
   EngagementEventDto,
@@ -210,13 +211,10 @@ async function upsertItem(client: PoolClient, uid: string, incoming: ItemDto): P
 
   const stored = itemRowToDto(existing.rows[0]);
 
-  if (incoming.updatedAt < stored.updatedAt) {
-    // Server is strictly newer: keep stored, ack its current seq unchanged.
-    return { clientId: incoming.id, id: incoming.id, seq: stored.seq };
-  }
-
-  if (itemContentEqual(incoming, stored)) {
-    // True no-op retry (e.g. client never saw our ack). Don't bump seq/synced_at.
+  const decision = decideUpsert(incoming.updatedAt, stored.updatedAt, itemContentEqual(incoming, stored));
+  if (decision === "KEEP_STORED" || decision === "NO_OP") {
+    // KEEP_STORED: server is strictly newer, keep stored, ack its current seq unchanged.
+    // NO_OP: true no-op retry (e.g. client never saw our ack) — don't bump seq/synced_at.
     return { clientId: incoming.id, id: incoming.id, seq: stored.seq };
   }
 
@@ -250,27 +248,6 @@ async function upsertItem(client: PoolClient, uid: string, incoming: ItemDto): P
     ]
   );
   return { clientId: incoming.id, id: incoming.id, seq: updated.rows[0].seq };
-}
-
-function itemContentEqual(a: ItemDto, b: ItemDto): boolean {
-  return (
-    a.updatedAt === b.updatedAt &&
-    a.type === b.type &&
-    a.sourceUrl === b.sourceUrl &&
-    a.normalizedUrl === b.normalizedUrl &&
-    a.title === b.title &&
-    a.bodyText === b.bodyText &&
-    a.summary === b.summary &&
-    a.thumbnailUrl === b.thumbnailUrl &&
-    a.category === b.category &&
-    JSON.stringify(a.entities) === JSON.stringify(b.entities) &&
-    a.eventDate === b.eventDate &&
-    a.status === b.status &&
-    a.isStarred === b.isStarred &&
-    a.summaryLocked === b.summaryLocked &&
-    a.tagsLocked === b.tagsLocked &&
-    a.deletedAt === b.deletedAt
-  );
 }
 
 /**
@@ -314,15 +291,8 @@ async function upsertExistingTagRow(
   incoming: TagDto,
   stored: PulledTagDto
 ): Promise<Ack> {
-  if (incoming.updatedAt < stored.updatedAt) {
-    return { clientId: incoming.id, id: stored.id, seq: stored.seq };
-  }
-  const contentEqual =
-    incoming.updatedAt === stored.updatedAt &&
-    incoming.label === stored.label &&
-    incoming.origin === stored.origin &&
-    incoming.deletedAt === stored.deletedAt;
-  if (contentEqual) {
+  const decision = decideUpsert(incoming.updatedAt, stored.updatedAt, tagContentEqual(incoming, stored));
+  if (decision === "KEEP_STORED" || decision === "NO_OP") {
     return { clientId: incoming.id, id: stored.id, seq: stored.seq };
   }
 
@@ -351,10 +321,8 @@ async function upsertItemTag(client: PoolClient, uid: string, incoming: ItemTagD
   }
 
   const stored = itemTagRowToDto(existing.rows[0]);
-  if (incoming.updatedAt < stored.updatedAt) {
-    return { itemId: incoming.itemId, tagId: incoming.tagId, seq: stored.seq };
-  }
-  if (incoming.updatedAt === stored.updatedAt && incoming.deletedAt === stored.deletedAt) {
+  const decision = decideUpsert(incoming.updatedAt, stored.updatedAt, itemTagContentEqual(incoming, stored));
+  if (decision === "KEEP_STORED" || decision === "NO_OP") {
     return { itemId: incoming.itemId, tagId: incoming.tagId, seq: stored.seq };
   }
 
