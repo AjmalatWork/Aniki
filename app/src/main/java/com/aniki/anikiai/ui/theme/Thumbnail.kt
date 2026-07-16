@@ -4,6 +4,10 @@ import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -17,7 +21,7 @@ import com.aniki.anikiai.data.db.ItemType
 
 /**
  * Three-tier thumbnail resolution (brief "polish pass" item 2):
- * 1. NOTE -> always a seal-glyph tile, regardless of thumbnailUrl (notes never use OG images or
+ * 1. NOTE -> always a note-glyph tile, regardless of thumbnailUrl (notes never use OG images or
  *    monograms).
  * 2. A real thumbnailUrl (article og:image or YouTube oEmbed thumbnail) -> layered over the
  *    type-tinted gradient placeholder, same as before -- Coil's painter is transparent until the
@@ -38,7 +42,7 @@ fun ItemThumbnail(
     contentScale: ContentScale = ContentScale.Crop
 ) {
     when {
-        type == ItemType.NOTE -> SealGlyphTile(modifier)
+        type == ItemType.NOTE -> NoteGlyphTile(modifier)
         type == ItemType.WEB_ARTICLE && thumbnailUrl.isNullOrBlank() -> MonogramTile(sourceUrl, modifier)
         else -> Box(modifier.background(typeThumbBrush(type))) {
             if (!thumbnailUrl.isNullOrBlank()) {
@@ -68,10 +72,24 @@ private fun MonogramTile(sourceUrl: String?, modifier: Modifier) {
     }
 }
 
-/** Paper/brush motif, oxblood on parchment -- the same 兄 seal used everywhere else in the app. */
+/**
+ * Note thumbnail fallback ("polish pass 2" item 2, revised per user feedback): styled like the
+ * app launcher icon -- the same [SealStampGradient] oxblood badge, with the existing
+ * [Icons.Default.Edit] pencil glyph (already used for edit affordances elsewhere, e.g. Detail's
+ * edit-title/summary buttons) in [Paper] on top, standing in for the launcher's 兄 mark. Reuses an
+ * existing icon rather than a new hand-drawn shape, and stays visually distinct from the outlined
+ * seal shown elsewhere on the card (filled badge, no 兄 character, no rotation) so it doesn't read
+ * as a duplicate. Unrotated and Center-aligned so it can't drift off-center the way the old
+ * rotated seal glyph did.
+ */
 @Composable
-private fun SealGlyphTile(modifier: Modifier) {
-    Box(modifier.background(Paper), contentAlignment = Alignment.Center) {
-        SealMark(size = 22.dp, filled = true)
+private fun NoteGlyphTile(modifier: Modifier) {
+    Box(modifier.background(SealStampGradient), contentAlignment = Alignment.Center) {
+        Icon(
+            Icons.Default.Edit,
+            contentDescription = null,
+            tint = Paper,
+            modifier = Modifier.size(20.dp)
+        )
     }
 }

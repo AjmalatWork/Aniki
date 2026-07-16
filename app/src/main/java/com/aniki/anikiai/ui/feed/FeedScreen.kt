@@ -80,12 +80,21 @@ import com.aniki.anikiai.ui.theme.PaperLine
 import com.aniki.anikiai.ui.theme.Seal
 import com.aniki.anikiai.ui.theme.SealDark
 import com.aniki.anikiai.ui.theme.SealMark
+import com.aniki.anikiai.ui.theme.Spacing
 import com.aniki.anikiai.ui.theme.WeightedCard
 
 /**
  * The Feed is the one immersive dark-ground screen in the app (mockup plates 03/04) — it wraps
  * itself in AnikiTheme(darkGround = true) rather than inheriting the parchment default.
  */
+
+/**
+ * Bottom-anchor offset shared by every card type's bottom zone (video's text+tags column, the
+ * article hero's source+tags column, the note tags row) so all three clear the swipe-up hint
+ * ([Spacing.sm] above [PaddingValues.calculateBottomPadding]) by the same margin instead of each
+ * card type drifting to its own one-off value ("polish pass 2" item 3).
+ */
+private val BOTTOM_ZONE_INSET = 46.dp
 @Composable
 fun FeedScreen(
     repository: ItemRepository,
@@ -298,7 +307,7 @@ private fun FeedCard(
                 Row(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
-                        .padding(start = 18.dp, end = 66.dp, bottom = contentPadding.calculateBottomPadding() + 46.dp)
+                        .padding(start = 18.dp, end = 66.dp, bottom = contentPadding.calculateBottomPadding() + BOTTOM_ZONE_INSET)
                         .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
@@ -321,7 +330,7 @@ private fun FeedCard(
                     .padding(
                         start = 20.dp,
                         end = 66.dp,
-                        bottom = contentPadding.calculateBottomPadding() + 34.dp
+                        bottom = contentPadding.calculateBottomPadding() + BOTTOM_ZONE_INSET
                     )
             ) {
                 if (!item.category.isNullOrBlank()) {
@@ -330,7 +339,7 @@ private fun FeedCard(
                         style = MaterialTheme.typography.labelMedium.copy(letterSpacing = 1.5.sp),
                         color = Color(0xFFE7B9A8)
                     )
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(Spacing.md))
                 }
                 Text(
                     text = item.title,
@@ -339,7 +348,7 @@ private fun FeedCard(
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis
                 )
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(Spacing.md))
                 Text(
                     text = item.summary ?: "Aniki is still reading this one.",
                     style = MaterialTheme.typography.bodyMedium,
@@ -348,7 +357,7 @@ private fun FeedCard(
                     overflow = TextOverflow.Ellipsis
                 )
                 if (itemWithTags.tags.isNotEmpty()) {
-                    Spacer(Modifier.height(15.dp))
+                    Spacer(Modifier.height(Spacing.lg))
                     Row(
                         modifier = Modifier.horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -385,7 +394,7 @@ private fun FeedCard(
         // it's eligible (first-ever Feed open, plus idle re-trigger during that same session only).
         AnimatedVisibility(
             visible = showHint,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = contentPadding.calculateBottomPadding() + 10.dp),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = contentPadding.calculateBottomPadding() + Spacing.sm),
             enter = fadeIn(animationSpec = tween(durationMillis = 260)),
             exit = fadeOut(animationSpec = tween(durationMillis = 260))
         ) {
@@ -535,11 +544,11 @@ private fun ArticleHeroCard(
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(start = 20.dp, end = 66.dp, bottom = contentPadding.calculateBottomPadding() + 34.dp)
+                .padding(start = 20.dp, end = 66.dp, bottom = contentPadding.calculateBottomPadding() + BOTTOM_ZONE_INSET)
         ) {
             Text(text = sourceLabel, style = MaterialTheme.typography.labelMedium, color = OnDarkBody)
             if (tags.isNotEmpty()) {
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(Spacing.lg))
                 Row(
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)

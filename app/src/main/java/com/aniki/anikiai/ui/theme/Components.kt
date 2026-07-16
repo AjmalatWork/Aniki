@@ -94,6 +94,13 @@ fun WeightedCard(
     )
 }
 
+/** The embossed oxblood stamp fill — [SealMark]'s filled variant and the app launcher icon both
+ *  use this exact gradient; shared here so a third user (the note thumbnail glyph) doesn't drift. */
+val SealStampGradient: Brush = Brush.verticalGradient(
+    0f to Color(0xFF8D4234),
+    1f to Color(0xFF6E2F25)
+)
+
 /**
  * The 兄 seal — the mark Aniki presses on items it has read and filed.
  * Two forms, both from the mockup:
@@ -126,12 +133,7 @@ fun SealMark(
                 .weightedShadow(shape, ambient = size * 0.18f, contact = size * 0.06f)
                 .clip(shape)
                 // Slight top-light vertical shift for the pressed/embossed feel.
-                .background(
-                    Brush.verticalGradient(
-                        0f to Color(0xFF8D4234),
-                        1f to Color(0xFF6E2F25)
-                    )
-                )
+                .background(SealStampGradient)
                 .border(1.dp, Color.White.copy(alpha = 0.14f), shape),
             contentAlignment = Alignment.Center
         ) {

@@ -70,7 +70,7 @@ import com.aniki.anikiai.ui.theme.PulseDot
 import com.aniki.anikiai.ui.theme.Seal
 import com.aniki.anikiai.ui.theme.SealMark
 import com.aniki.anikiai.ui.theme.ShimmerBox
-import com.aniki.anikiai.ui.theme.typeMonoLabel
+import com.aniki.anikiai.ui.theme.TypeIcon
 import com.aniki.anikiai.ui.theme.ItemThumbnail
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -320,29 +320,26 @@ private fun ItemRow(itemWithTags: ItemWithTags, onOpen: (String) -> Unit, onRetr
         verticalAlignment = Alignment.Top
     ) {
         // Thumb: shimmer while processing, type-tinted gradient once enriched/needs-attention.
-        Box(modifier = Modifier.size(58.dp)) {
-            if (item.status == ItemStatus.PENDING) {
-                ShimmerBox(modifier = Modifier.fillMaxSize())
-            } else {
-                ItemThumbnail(
-                    thumbnailUrl = item.thumbnailUrl,
-                    type = item.type,
-                    sourceUrl = item.sourceUrl,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(RoundedCornerShape(11.dp))
-                )
-                Text(
-                    text = typeMonoLabel(item.type),
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp),
-                    color = Paper,
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(4.dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.4f))
-                        .padding(horizontal = 4.dp, vertical = 1.dp)
-                )
+        // The type icon sits below the image (not overlaid) for article/video; notes skip it --
+        // their thumbnail glyph already communicates type on its own ("polish pass 2" item 1/2).
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(modifier = Modifier.size(58.dp)) {
+                if (item.status == ItemStatus.PENDING) {
+                    ShimmerBox(modifier = Modifier.fillMaxSize())
+                } else {
+                    ItemThumbnail(
+                        thumbnailUrl = item.thumbnailUrl,
+                        type = item.type,
+                        sourceUrl = item.sourceUrl,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(11.dp))
+                    )
+                }
+            }
+            if (item.status != ItemStatus.PENDING && item.type != ItemType.NOTE) {
+                Spacer(Modifier.height(7.dp))
+                TypeIcon(item.type, size = 12.dp, tint = Muted)
             }
         }
         Spacer(Modifier.width(12.dp))
