@@ -15,6 +15,7 @@ import com.aniki.anikiai.AnikiApplication
 import com.aniki.anikiai.data.remote.NetworkClient
 import com.aniki.anikiai.work.NoteTitleBackfiller
 import com.aniki.anikiai.work.ThumbnailBackfiller
+import com.aniki.anikiai.work.TrashPurger
 import java.util.concurrent.TimeUnit
 
 class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
@@ -24,10 +25,11 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         val syncManager = SyncManager(NetworkClient.api, app.syncRepository, app.syncCursorStore)
         return when (val result = syncManager.runSync()) {
             is SyncResult.Success -> {
-                // Both piggyback on a successful sync (the approved "next sync/open" trigger)
-                // rather than their own worker/schedule.
+                // All three piggyback on a successful sync (the approved "next sync/open"
+                // trigger) rather than their own worker/schedule.
                 ThumbnailBackfiller.run(app.repository, NetworkClient.api) // zero Gemini cost
                 NoteTitleBackfiller.run(applicationContext, app.repository) // throttled, real cost
+                TrashPurger.run(app.repository) // local-only, no network/Gemini cost
                 WorkResult.success()
             }
             // Guest mode / signed out: nothing to sync yet, not a failure.

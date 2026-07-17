@@ -55,7 +55,8 @@ fun SettingsScreen(
     userEmail: String?,
     onBack: () -> Unit,
     onSignOut: () -> Unit,
-    onAccountDeleted: () -> Unit
+    onAccountDeleted: () -> Unit,
+    onOpenTrash: () -> Unit
 ) {
     val context = LocalContext.current
     val appContext = context.applicationContext
@@ -152,6 +153,10 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = Seal
                 )
+            }
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(onClick = onOpenTrash, modifier = Modifier.fillMaxWidth()) {
+                Text("Trash", style = MaterialTheme.typography.labelLarge)
             }
 
             Spacer(Modifier.height(32.dp))

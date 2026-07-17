@@ -3,6 +3,7 @@ package com.aniki.anikiai.ui.detail
 import android.content.Intent
 import android.net.Uri
 import android.text.format.DateUtils
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,7 +28,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -43,6 +43,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,6 +54,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -110,8 +113,9 @@ fun ItemDetailScreen(
                 onBack = onBack,
                 onToggleStar = viewModel::toggleStar,
                 onDeleteRequest = { showDeleteConfirm = true },
-                onSaveSummary = viewModel::saveSummary,
-                onSaveTitle = viewModel::saveTitle,
+                onTitleDraftChange = viewModel::updateTitleDraft,
+                onBodyDraftChange = viewModel::updateBodyDraft,
+                onFlushNoteEdits = viewModel::flushPendingEdits,
                 onAddTag = viewModel::addTag,
                 onRemoveTag = viewModel::removeTag,
                 onRetry = viewModel::retry
@@ -146,8 +150,9 @@ private fun ItemDetailContent(
     onBack: () -> Unit,
     onToggleStar: (Boolean) -> Unit,
     onDeleteRequest: () -> Unit,
-    onSaveSummary: (String) -> Unit,
-    onSaveTitle: (String) -> Unit,
+    onTitleDraftChange: (String) -> Unit,
+    onBodyDraftChange: (String) -> Unit,
+    onFlushNoteEdits: (title: String, body: String) -> Unit,
     onAddTag: (String) -> Unit,
     onRemoveTag: (String) -> Unit,
     onRetry: () -> Unit
@@ -155,10 +160,37 @@ private fun ItemDetailContent(
     val item = itemWithTags.item
     val context = LocalContext.current
     val hasSource = item.type != ItemType.NOTE && item.sourceUrl != null
+    val isNote = item.type == ItemType.NOTE
+
+    // Titles are directly editable for every item type (no pencil-tap gate, see TitleField
+    // below); note bodies additionally so. Draft state is lifted here so the flush-on-dispose
+    // below can save whatever's still unsaved when the debounce window hasn't elapsed yet. Keyed
+    // on item.id (not the whole item) so a background write -- e.g. re-enrichment updating tags
+    // mid-edit -- doesn't clobber in-progress typing.
+    var titleDraft by remember(item.id) { mutableStateOf(item.title) }
+    var noteBodyDraft by remember(item.id) { mutableStateOf(item.bodyText.orEmpty()) }
+
+    DisposableEffect(item.id) {
+        onDispose { onFlushNoteEdits(titleDraft, noteBodyDraft) }
+    }
+
+    // Back button and system back/gesture both route through here rather than calling onBack
+    // directly: clearing focus + hiding the keyboard synchronously, before the nav transition
+    // starts, is what stops a blinking-cursor artifact from briefly showing on top of the
+    // destination screen after navigating away mid-edit (previously each path handled this
+    // differently -- and inconsistently -- via whatever the system happened to do on its own).
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val dismissEditingAndBack = {
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+        onBack()
+    }
+    BackHandler(onBack = dismissEditingAndBack)
 
     Box(modifier = modifier) {
         Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-            Hero(item.type, item.thumbnailUrl, item.sourceUrl, topInset, onBack, item.status)
+            Hero(item.type, item.thumbnailUrl, item.sourceUrl, topInset, dismissEditingAndBack, item.status)
 
             Column(modifier = Modifier.padding(18.dp)) {
                     if (!item.category.isNullOrBlank()) {
@@ -169,7 +201,10 @@ private fun ItemDetailContent(
                         )
                         Spacer(Modifier.height(9.dp))
                     }
-                    TitleBlock(title = item.title, onSave = onSaveTitle)
+                    TitleField(
+                        title = titleDraft,
+                        onValueChange = { titleDraft = it; onTitleDraftChange(it) }
+                    )
                     Spacer(Modifier.height(10.dp))
 
                     MetaRow(item.type, item.sourceUrl, item.createdAt)
@@ -177,7 +212,12 @@ private fun ItemDetailContent(
 
                     when (item.status) {
                         ItemStatus.ENRICHED -> {
-                            SummaryBlock(summary = item.summary.orEmpty(), onSave = onSaveSummary)
+                            // Notes hide Aniki's summary in the detail view -- redundant next to
+                            // the user's own written content they're already looking at (tags are
+                            // still generated from the same enrichment call, just not shown here).
+                            if (!isNote) {
+                                SummaryBlock(summary = item.summary.orEmpty())
+                            }
                         }
                         ItemStatus.NEEDS_ATTENTION -> {
                             ProcessingStatusCard(
@@ -192,10 +232,13 @@ private fun ItemDetailContent(
                         }
                     }
 
-                    if (item.type == ItemType.NOTE && !item.bodyText.isNullOrBlank()) {
+                    if (isNote) {
                         Spacer(Modifier.height(18.dp))
                         SectionLabel("Note")
-                        Text(text = item.bodyText, style = MaterialTheme.typography.bodyMedium, color = Kon)
+                        NoteBodyField(
+                            body = noteBodyDraft,
+                            onValueChange = { noteBodyDraft = it; onBodyDraftChange(it) }
+                        )
                     }
 
                     Spacer(Modifier.height(18.dp))
@@ -325,62 +368,54 @@ private fun ProcessingStatusCard(
     }
 }
 
-/** Same edit-lock pattern as SummaryBlock (Slice 4): inline TextField + Save/Cancel, no separate
- *  dialog. Saving here sets titleEditedByUser=true, so re-enrichment never overwrites it again. */
+/** All item types open directly editable -- no pencil-tap gate, no Save/Cancel button. Every
+ *  keystroke flows up through onValueChange to the ViewModel's debounced autosave (see
+ *  ItemDetailViewModel.updateTitleDraft), which sets titleEditedByUser=true so re-enrichment
+ *  never overwrites a user-edited title again. No indicator line, by design: it should read as
+ *  "this is your content", not "this is a form". */
 @Composable
-private fun TitleBlock(title: String, onSave: (String) -> Unit) {
-    var editing by remember { mutableStateOf(false) }
-    var draft by remember(title) { mutableStateOf(title) }
-
-    if (editing) {
-        Column {
-            TextField(
-                value = draft,
-                onValueChange = { draft = it },
-                textStyle = MaterialTheme.typography.headlineSmall.copy(color = Ink),
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
-                    focusedIndicatorColor = InkLine,
-                    unfocusedIndicatorColor = InkLine,
-                    cursorColor = Seal
-                ),
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = {
-                        if (draft.isNotBlank()) onSave(draft)
-                        editing = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Kon, contentColor = Paper)
-                ) { Text("Save") }
-                TextButton(onClick = { draft = title; editing = false }) {
-                    Text("Cancel", color = Kon)
-                }
-            }
-        }
-    } else {
-        Row(verticalAlignment = Alignment.Top) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.headlineSmall,
-                color = Ink,
-                modifier = Modifier.weight(1f)
-            )
-            IconButton(onClick = { editing = true }, modifier = Modifier.size(28.dp)) {
-                Icon(Icons.Default.Edit, contentDescription = "Edit title", tint = Muted)
-            }
-        }
-    }
+private fun TitleField(title: String, onValueChange: (String) -> Unit) {
+    TextField(
+        value = title,
+        onValueChange = onValueChange,
+        placeholder = { Text("Title", style = MaterialTheme.typography.headlineSmall, color = Muted) },
+        textStyle = MaterialTheme.typography.headlineSmall.copy(color = Ink),
+        colors = TextFieldDefaults.colors(
+            focusedContainerColor = Color.Transparent,
+            unfocusedContainerColor = Color.Transparent,
+            focusedIndicatorColor = Color.Transparent,
+            unfocusedIndicatorColor = Color.Transparent,
+            cursorColor = Seal
+        ),
+        modifier = Modifier.fillMaxWidth()
+    )
 }
 
+/** Same direct-edit shape as [TitleField], for the note body. bodyLarge (not the smaller
+ *  bodyMedium most other body text uses) -- comfortable reading size for the main content block
+ *  of the screen, matching SummaryBlock's article/video equivalent below. */
 @Composable
-private fun SummaryBlock(summary: String, onSave: (String) -> Unit) {
-    var editing by remember { mutableStateOf(false) }
-    var draft by remember(summary) { mutableStateOf(summary) }
+private fun NoteBodyField(body: String, onValueChange: (String) -> Unit) {
+    TextField(
+        value = body,
+        onValueChange = onValueChange,
+        placeholder = { Text("Write something…", style = MaterialTheme.typography.bodyLarge, color = Muted) },
+        textStyle = MaterialTheme.typography.bodyLarge.copy(color = Kon),
+        colors = TextFieldDefaults.colors(
+            focusedContainerColor = Color.Transparent,
+            unfocusedContainerColor = Color.Transparent,
+            focusedIndicatorColor = Color.Transparent,
+            unfocusedIndicatorColor = Color.Transparent,
+            cursorColor = Seal
+        ),
+        modifier = Modifier.fillMaxWidth()
+    )
+}
 
+/** Read-only -- articles/videos only get direct-edit for the title (see [TitleField]); the
+ *  AI summary here is not user-editable. */
+@Composable
+private fun SummaryBlock(summary: String) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -394,44 +429,11 @@ private fun SummaryBlock(summary: String, onSave: (String) -> Unit) {
             color = Matcha
         )
         Spacer(Modifier.height(7.dp))
-
-        if (editing) {
-            TextField(
-                value = draft,
-                onValueChange = { draft = it },
-                textStyle = MaterialTheme.typography.bodyMedium.copy(color = Kon),
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
-                    focusedIndicatorColor = InkLine,
-                    unfocusedIndicatorColor = InkLine,
-                    cursorColor = Seal
-                ),
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = { onSave(draft); editing = false },
-                    colors = ButtonDefaults.buttonColors(containerColor = Kon, contentColor = Paper)
-                ) { Text("Save") }
-                TextButton(onClick = { draft = summary; editing = false }) {
-                    Text("Cancel", color = Kon)
-                }
-            }
-        } else {
-            Row(verticalAlignment = Alignment.Top) {
-                Text(
-                    text = summary.ifBlank { "No summary yet." },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Kon,
-                    modifier = Modifier.weight(1f)
-                )
-                IconButton(onClick = { editing = true }, modifier = Modifier.size(28.dp)) {
-                    Icon(Icons.Default.Edit, contentDescription = "Edit summary", tint = Muted)
-                }
-            }
-        }
+        Text(
+            text = summary.ifBlank { "No summary yet." },
+            style = MaterialTheme.typography.bodyLarge,
+            color = Kon
+        )
     }
 }
 

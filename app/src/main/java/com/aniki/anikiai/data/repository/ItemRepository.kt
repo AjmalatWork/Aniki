@@ -294,21 +294,34 @@ class ItemRepository(
         )
     }
 
-    suspend fun updateSummary(itemId: String, summary: String) {
-        val current = itemDao.getItemById(itemId) ?: return
-        val now = System.currentTimeMillis()
-        itemDao.updateItem(
-            current.copy(summary = summary, summaryEditedByUser = true, updatedAt = now, dirty = true)
-        )
-        syncFtsRow(itemId)
-    }
-
     suspend fun updateTitle(itemId: String, title: String) {
         if (title.isBlank()) return
         val current = itemDao.getItemById(itemId) ?: return
         val now = System.currentTimeMillis()
         itemDao.updateItem(
             current.copy(title = title, titleEditedByUser = true, updatedAt = now, dirty = true)
+        )
+        syncFtsRow(itemId)
+    }
+
+    /**
+     * Persists a directly-edited note body (polish pass: notes are now editable in place, no
+     * pencil-tap gate). Resets status to PENDING when the new body is non-blank so the normal
+     * enrichment path (same worker used at creation) re-runs against the updated content, keeping
+     * tags relevant and regenerating the title if it isn't user-locked -- see EnrichmentWorker /
+     * applyEnrichment's existing titleEditedByUser check, unchanged and reused as-is here. A
+     * title-only edit doesn't go through this method (see updateTitle): tags/title generation are
+     * both derived from body content, so re-enriching on a pure title change would be a wasted
+     * Gemini call. Left as-is (not reset to PENDING) when edited down to blank, since there's
+     * nothing meaningful to re-enrich yet -- the caller skips enqueueing enrichment in that case.
+     */
+    suspend fun updateNoteBody(itemId: String, body: String) {
+        val current = itemDao.getItemById(itemId) ?: return
+        if (body == current.bodyText) return
+        val now = System.currentTimeMillis()
+        val newStatus = if (body.isNotBlank()) ItemStatus.PENDING else current.status
+        itemDao.updateItem(
+            current.copy(bodyText = body, status = newStatus, updatedAt = now, dirty = true)
         )
         syncFtsRow(itemId)
     }
@@ -337,12 +350,73 @@ class ItemRepository(
         syncFtsRow(itemId)
     }
 
-    /** Soft-delete only — sync propagates the tombstone exactly like Slice 3 already tested. */
+    /** Soft-delete only — sync propagates the tombstone exactly like Slice 3 already tested.
+     *  This is also what puts an item in Trash: deletedAt is the same tombstone column Trash
+     *  lists against (see observeTrashedItems), so "delete" and "move to Trash" are the same
+     *  action, not two separate states to keep in sync. */
     suspend fun deleteItem(itemId: String) {
         val current = itemDao.getItemById(itemId) ?: return
         val now = System.currentTimeMillis()
         itemDao.updateItem(current.copy(deletedAt = now, updatedAt = now, dirty = true))
         ftsIndexer.remove(itemId)
+    }
+
+    /** Trash list: every soft-deleted item, most-recently-trashed first. */
+    fun observeTrashedItems(): Flow<List<ItemEntity>> = itemDao.observeTrashedItems()
+
+    /** Un-tombstones an item (clears deletedAt) so it reappears in Library/Feed/search and syncs
+     *  that reversal to other devices, exactly like any other content edit. */
+    suspend fun restoreItem(itemId: String) {
+        val current = itemDao.getItemById(itemId) ?: return
+        val now = System.currentTimeMillis()
+        itemDao.updateItem(current.copy(deletedAt = null, updatedAt = now, dirty = true))
+        syncFtsRow(itemId)
+    }
+
+    /**
+     * Immediate, user-requested permanent delete from the Trash view. Physically removes the row
+     * (and its tag cross-refs) rather than waiting for [purgeExpiredTrash]'s 30-day window.
+     *
+     * Known edge case, accepted for this pass: this hard-deletes the local row unconditionally,
+     * even if it hasn't been synced yet (dirty=true) or the device is offline. If so, the tombstone
+     * that would normally propagate this deletion to the server/other devices never gets pushed —
+     * the row disappears here but could still exist elsewhere and resurface via a future sync. The
+     * caller (TrashViewModel) enqueues a sync first to give an online device the best chance of
+     * pushing the tombstone before this runs, but doesn't block on it. [purgeExpiredTrash]'s
+     * automatic 30-day sweep intentionally requires dirty=false to avoid this exact risk; this
+     * manual path can't offer the same guarantee since "delete forever" means immediately.
+     */
+    suspend fun permanentlyDeleteItem(itemId: String) {
+        itemDao.deleteItemTagsForItem(itemId)
+        itemDao.hardDeleteItem(itemId)
+        ftsIndexer.remove(itemId)
+    }
+
+    /** Bulk version of [permanentlyDeleteItem] for the Trash view's "Empty Trash" action. Same
+     *  offline/unsynced-tombstone caveat applies to every row it touches. */
+    suspend fun emptyTrash() {
+        itemDao.getTrashedItemIds().forEach { id ->
+            itemDao.deleteItemTagsForItem(id)
+            itemDao.hardDeleteItem(id)
+        }
+    }
+
+    /**
+     * Client-side mirror of the server's tombstone GC (server/src/index.ts's daily sweep, which
+     * purges Postgres tombstones after TOMBSTONE_RETENTION_DAYS, default 90 days) — this purges
+     * the local Room row once a soft-deleted (Trash) item has passed [retentionMs]. Unlike
+     * [permanentlyDeleteItem], only touches items already confirmed synced (dirty=false), so an
+     * item whose tombstone hasn't reached the server yet is never silently dropped locally before
+     * other devices learn about the deletion. Returns the count purged, for logging.
+     */
+    suspend fun purgeExpiredTrash(retentionMs: Long): Int {
+        val cutoff = System.currentTimeMillis() - retentionMs
+        val ids = itemDao.getExpiredTrashItemIds(cutoff)
+        ids.forEach { id ->
+            itemDao.deleteItemTagsForItem(id)
+            itemDao.hardDeleteItem(id)
+        }
+        return ids.size
     }
 
     /**

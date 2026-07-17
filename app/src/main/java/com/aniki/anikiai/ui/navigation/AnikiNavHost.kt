@@ -45,6 +45,7 @@ import com.aniki.anikiai.ui.feed.FeedScreen
 import com.aniki.anikiai.ui.library.LibraryScreen
 import com.aniki.anikiai.ui.note.NewNoteScreen
 import com.aniki.anikiai.ui.settings.SettingsScreen
+import com.aniki.anikiai.ui.trash.TrashScreen
 import com.aniki.anikiai.ui.theme.Ink
 import com.aniki.anikiai.ui.theme.InkLine
 import com.aniki.anikiai.ui.theme.Muted
@@ -60,6 +61,7 @@ private object AnikiDestinations {
     const val LIBRARY = "library"
     const val NEW_NOTE = "new_note"
     const val SETTINGS = "settings"
+    const val TRASH = "trash"
     const val ITEM_DETAIL = "item_detail"
     const val ITEM_DETAIL_ARG = "itemId"
     const val ITEM_DETAIL_ROUTE = "$ITEM_DETAIL/{$ITEM_DETAIL_ARG}"
@@ -118,7 +120,14 @@ fun AnikiNavHost(
                     userEmail = userEmail,
                     onBack = { navController.popBackStack() },
                     onSignOut = onSignOut,
-                    onAccountDeleted = onSignOut
+                    onAccountDeleted = onSignOut,
+                    onOpenTrash = { navController.navigate(AnikiDestinations.TRASH) }
+                )
+            }
+            composable(AnikiDestinations.TRASH) {
+                TrashScreen(
+                    repository = repository,
+                    onBack = { navController.popBackStack() }
                 )
             }
             composable(AnikiDestinations.NEW_NOTE) {

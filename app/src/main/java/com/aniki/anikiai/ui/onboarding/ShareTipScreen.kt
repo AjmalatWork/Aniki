@@ -133,7 +133,7 @@ private fun StepCopy(step: ShareTipStep) {
             )
             Spacer(Modifier.height(14.dp))
             Text(
-                text = "Tap Share in any app — an article, a video, a note — and pick Aniki. " +
+                text = "Tap Share in any app — a link, a video, a note — and pick Aniki. " +
                     "It reads, tags, and files it for you.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = OnDarkBody,

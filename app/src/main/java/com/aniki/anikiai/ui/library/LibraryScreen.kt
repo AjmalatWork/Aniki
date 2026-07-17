@@ -220,7 +220,10 @@ private data class TypeFilterOption(val label: String, val type: String?)
 
 private val TYPE_FILTER_OPTIONS = listOf(
     TypeFilterOption("All", null),
-    TypeFilterOption("Articles", ItemType.WEB_ARTICLE),
+    // Display label only -- ItemType.WEB_ARTICLE (the stored/synced value) is unchanged;
+    // testers save a wide variety of URL types here, not just long-form articles, so "Links"
+    // describes the bucket more accurately than "Articles" did.
+    TypeFilterOption("Links", ItemType.WEB_ARTICLE),
     TypeFilterOption("Videos", ItemType.YOUTUBE_VIDEO),
     TypeFilterOption("Notes", ItemType.NOTE)
 )

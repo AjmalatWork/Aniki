@@ -53,6 +53,25 @@ interface ItemDao {
     @Query("SELECT * FROM items WHERE deletedAt IS NULL ORDER BY createdAt DESC")
     fun observeAllItems(): Flow<List<ItemEntity>>
 
+    /** Trash list: every soft-deleted item, most-recently-trashed first. */
+    @Query("SELECT * FROM items WHERE deletedAt IS NOT NULL ORDER BY deletedAt DESC")
+    fun observeTrashedItems(): Flow<List<ItemEntity>>
+
+    @Query("SELECT id FROM items WHERE deletedAt IS NOT NULL")
+    suspend fun getTrashedItemIds(): List<String>
+
+    /** [ItemRepository.purgeExpiredTrash]'s candidate pool: trashed past the retention cutoff AND
+     *  already synced (dirty=0) — the dirty guard is what stops the 30-day auto-purge from ever
+     *  hard-deleting a tombstone the server hasn't received yet. */
+    @Query("SELECT id FROM items WHERE deletedAt IS NOT NULL AND deletedAt < :cutoff AND dirty = 0")
+    suspend fun getExpiredTrashItemIds(cutoff: Long): List<String>
+
+    @Query("DELETE FROM items WHERE id = :id")
+    suspend fun hardDeleteItem(id: String)
+
+    @Query("DELETE FROM item_tags WHERE itemId = :id")
+    suspend fun deleteItemTagsForItem(id: String)
+
     /**
      * The onboarding demo item (see ItemEntity.isDemo), if it's ever been created on this device
      * and not since deleted. By design it's a normal, visible, user-deletable item in Library and

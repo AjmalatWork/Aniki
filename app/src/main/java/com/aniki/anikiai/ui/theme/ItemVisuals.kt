@@ -32,7 +32,7 @@ fun typeThumbBrush(type: String): Brush = when (type) {
 fun typeMonoLabel(type: String): String = when (type) {
     ItemType.YOUTUBE_VIDEO -> "▶ VIDEO"
     ItemType.NOTE -> "✎ NOTE"
-    else -> "◈ ARTICLE"
+    else -> "◈ LINK"
 }
 
 /** background to glyph-text color, background darkest-to-lightest. */
