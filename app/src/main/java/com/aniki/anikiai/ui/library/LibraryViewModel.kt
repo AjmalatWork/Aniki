@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 
 enum class SortMode { DATE_SAVED, LAST_VIEWED, ALPHABETICAL }
@@ -70,6 +71,15 @@ class LibraryViewModel(
         .debounce(250)
         .flatMapLatest { query -> repository.searchItems(query) }
 
+    // Distinguishes "haven't heard from Room yet" from "queried and it's genuinely empty" -- items
+    // itself can't do this alone, since stateIn's synthetic initial value (emptyList()) is
+    // indistinguishable from a real empty result. Flips true on the combine's first actual
+    // emission (onEach runs on the upstream flow, before stateIn's replay semantics kick in), so a
+    // freshly-recreated ViewModel (e.g. Back off Library, then re-entering) doesn't flash "Nothing
+    // saved yet" for the ~250ms debounce + query round-trip before the real data lands.
+    private val _hasLoadedItems = MutableStateFlow(false)
+    val hasLoadedItems: StateFlow<Boolean> = _hasLoadedItems
+
     val items: StateFlow<List<ItemWithTags>> = combine(
         searchResults, _selectedTagIds, _selectedType, _starredOnly, _sortMode
     ) { list, tagIds, type, starredOnly, sort ->
@@ -78,7 +88,8 @@ class LibraryViewModel(
             .filter { type == null || it.item.type == type }
             .filter { !starredOnly || it.item.isStarred }
             .let { filtered -> sortItems(filtered, sort) }
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    }.onEach { _hasLoadedItems.value = true }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** True if search/tag/type/starred filtering is narrowing the list — distinguishes "no results" from "nothing saved yet". */
     val hasActiveFilter: StateFlow<Boolean> = combine(

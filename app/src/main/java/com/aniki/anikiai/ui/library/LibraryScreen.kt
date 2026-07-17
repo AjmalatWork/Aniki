@@ -92,6 +92,7 @@ fun LibraryScreen(
         }
     )
     val items by viewModel.items.collectAsState()
+    val hasLoadedItems by viewModel.hasLoadedItems.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val availableTags by viewModel.availableTags.collectAsState()
     val selectedTagIds by viewModel.selectedTagIds.collectAsState()
@@ -157,7 +158,12 @@ fun LibraryScreen(
             }
             Box(Modifier.fillMaxWidth().height(1.dp).background(InkLine))
 
-            if (items.isEmpty()) {
+            if (!hasLoadedItems) {
+                // Room hasn't emitted yet (a freshly-recreated ViewModel, e.g. right after Back off
+                // Library) -- render nothing rather than a premature "Nothing saved yet", which
+                // would otherwise flash false for a library that actually has items.
+                Box(Modifier.fillMaxSize())
+            } else if (items.isEmpty()) {
                 EmptyState(hasActiveFilter = hasActiveFilter, modifier = Modifier.fillMaxSize())
             } else {
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
