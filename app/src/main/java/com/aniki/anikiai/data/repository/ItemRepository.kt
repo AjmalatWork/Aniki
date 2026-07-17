@@ -209,7 +209,9 @@ class ItemRepository(
             eventDate = eventDate,
             status = ItemStatus.ENRICHED,
             updatedAt = now,
-            dirty = true
+            dirty = true,
+            errorCode = null, // a success clears whatever an earlier failed attempt recorded
+            errorMessage = null
         )
         itemDao.updateItem(updated)
 
@@ -234,10 +236,40 @@ class ItemRepository(
 
     suspend fun markTitleBackfillAttempted(itemId: String) = itemDao.markTitleBackfillAttempted(itemId)
 
-    suspend fun markNeedsAttention(itemId: String) {
+    /** [errorCode]/[errorMessage] are the server's EnrichmentErrorCode + readable message for this
+     *  attempt's failure (both null for a failure with no server response at all -- a raw network
+     *  exception, which this deliberately doesn't try to classify further). Overwrites whatever an
+     *  earlier attempt recorded, so the UI always reflects the most recent failure reason. */
+    suspend fun markNeedsAttention(itemId: String, errorCode: String? = null, errorMessage: String? = null) {
         val current = itemDao.getItemById(itemId) ?: return
         itemDao.updateItem(
-            current.copy(status = ItemStatus.NEEDS_ATTENTION, updatedAt = System.currentTimeMillis(), dirty = true)
+            current.copy(
+                status = ItemStatus.NEEDS_ATTENTION,
+                updatedAt = System.currentTimeMillis(),
+                dirty = true,
+                errorCode = errorCode,
+                errorMessage = errorMessage
+            )
+        )
+    }
+
+    /**
+     * A note's body was too short to be worth a Gemini call (see EnrichmentWorker's
+     * MIN_NOTE_BODY_LENGTH check) -- treated as "done" rather than failed: there's nothing more
+     * Aniki can add, so the item goes straight to ENRICHED with whatever title/tags it already had
+     * (none, for a brand-new note) rather than sitting in PENDING forever or showing a failure the
+     * user didn't cause and can't fix by retrying.
+     */
+    suspend fun markEnrichmentSkipped(itemId: String) {
+        val current = itemDao.getItemById(itemId) ?: return
+        itemDao.updateItem(
+            current.copy(
+                status = ItemStatus.ENRICHED,
+                updatedAt = System.currentTimeMillis(),
+                dirty = true,
+                errorCode = null,
+                errorMessage = null
+            )
         )
     }
 
@@ -319,9 +351,19 @@ class ItemRepository(
         val current = itemDao.getItemById(itemId) ?: return
         if (body == current.bodyText) return
         val now = System.currentTimeMillis()
-        val newStatus = if (body.isNotBlank()) ItemStatus.PENDING else current.status
+        val reEnriching = body.isNotBlank()
+        val newStatus = if (reEnriching) ItemStatus.PENDING else current.status
         itemDao.updateItem(
-            current.copy(bodyText = body, status = newStatus, updatedAt = now, dirty = true)
+            current.copy(
+                bodyText = body,
+                status = newStatus,
+                updatedAt = now,
+                dirty = true,
+                // A previous failure no longer describes this content once it's about to be
+                // re-enriched -- clear it rather than leaving a stale reason visible mid-retry.
+                errorCode = if (reEnriching) null else current.errorCode,
+                errorMessage = if (reEnriching) null else current.errorMessage
+            )
         )
         syncFtsRow(itemId)
     }

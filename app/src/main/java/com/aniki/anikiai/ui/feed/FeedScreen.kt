@@ -55,8 +55,10 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -178,18 +180,70 @@ fun FeedScreen(
                 var refreshing by remember { mutableStateOf(false) }
                 val blurRadius by animateDpAsState(if (refreshing) 16.dp else 0.dp, tween(240), label = "feedBlur")
 
-                LaunchedEffect(pagerState.settledPage, items) {
+                // Keyed on settledPage ALONE, deliberately not also on `items`: `items` changes on
+                // every background reprojection (a star toggled elsewhere, a reprojectFrozen after
+                // returning from a tab switch) even when the user hasn't swiped at all. Co-keying on
+                // it used to re-fire this effect on those unrelated updates too, and during the
+                // transient window where `items` had already changed shape but the pager hadn't
+                // caught up (e.g. right around a dismiss shrinking the list), `items.getOrNull(
+                // settledPage)` could momentarily resolve to a different item than the one actually
+                // showing -- silently corrupting sessionLastSettledItemId with the wrong id, which
+                // would only surface later, intermittently, as the Feed resuming on the wrong card.
+                // `items` is still read fresh inside the effect body (LaunchedEffect closures always
+                // see the latest composed values), so this only changes *when* it re-runs, not what
+                // it reads.
+                LaunchedEffect(pagerState.settledPage) {
                     items.getOrNull(pagerState.settledPage)?.let { viewModel.onPageSettled(it.item.id) }
+                }
+
+                // Safety net for the effect above: it only updates sessionLastSettledItemId when
+                // settledPage actually changes, which leaves a real gap if the Feed is torn down
+                // (tab switch away) before that update has had a chance to land -- e.g. a swipe's
+                // fling/snap settling right as the user taps the bottom nav, or any other timing
+                // where "the pager visibly moved" and "the settle callback ran" don't quite land in
+                // the same frame. This force-syncs the true current page directly from pagerState at
+                // the exact moment this Content view is actually torn down, closing that gap.
+                // rememberUpdatedState is required, not a plain closure over `items`: this effect is
+                // keyed on `pagerState` (stable across recompositions), so its onDispose lambda is
+                // captured once and would otherwise see whichever `items` was current back when the
+                // effect first entered composition, not the latest one.
+                val latestItems by rememberUpdatedState(items)
+                DisposableEffect(pagerState) {
+                    onDispose {
+                        latestItems.getOrNull(pagerState.settledPage)?.let { viewModel.onPageSettled(it.item.id) }
+                    }
                 }
 
                 // Pill tapped -> onRefreshTapped() rebuilt `items` and bumped scrollToTop: blur,
                 // fast-scroll to the first card of the refreshed order, then clear the blur.
+                //
+                // scrollToTop is a counter on the ViewModel (persists across this composable's own
+                // teardown/remount, e.g. a tab switch away and back), but LaunchedEffect's "only
+                // re-run when the key changes" tracking does NOT persist across a remount -- a fresh
+                // LaunchedEffect(scrollToTop) sees whatever the CURRENT counter value is as a brand
+                // new key on its very first run, even if that value was set long ago in an earlier
+                // visit. Left unguarded, that replayed the whole blur+scroll-to-top animation on
+                // *every* return to Feed for the rest of the session, the instant the pill had been
+                // tapped even once. seenScrollToTop is the fix: it snapshots whatever the counter
+                // already was at THIS composable's mount time, so that baseline value is recognized
+                // as "old news" on the first effect run, and only a genuine increment that happens
+                // while this Feed instance is actually alive and on-screen triggers the animation.
+                var seenScrollToTop by remember { mutableIntStateOf(scrollToTop) }
                 LaunchedEffect(scrollToTop) {
-                    if (scrollToTop == 0) return@LaunchedEffect
+                    if (scrollToTop == seenScrollToTop) return@LaunchedEffect
+                    seenScrollToTop = scrollToTop
                     refreshing = true
                     delay(80) // let the re-ranked stack compose under the blur before it moves
-                    pagerState.animateScrollToPage(0)
-                    delay(120)
+                    // animateScrollToPage suspends until that scroll animation actually finishes, so
+                    // clearing `refreshing` right after it returns ties the blur's fade-out to the
+                    // real scroll-completion event. An explicit tween (not the default spring)
+                    // matters here: a spring's settling tail is visually imperceptible but the
+                    // coroutine stays suspended through it, so "animation complete" lands noticeably
+                    // later than "looks complete" -- with a spring this was the actual source of the
+                    // blur still looking like it lingered after the scroll appeared done. A tween has
+                    // no such tail, so the coroutine resumes (and the blur starts its own fade-out)
+                    // right as the scroll visually stops.
+                    pagerState.animateScrollToPage(0, animationSpec = tween(durationMillis = 380))
                     refreshing = false
                 }
 
@@ -228,13 +282,15 @@ fun FeedScreen(
                     }
 
                     // The refresh-available pill floats over the whole stack, fixed at the top —
-                    // not attached to any card (item 4).
+                    // not attached to any card (item 4). Sits below the source/saved-time pill row
+                    // (topPad in FeedCard below, same +10.dp base) rather than sharing its band, so
+                    // the two never overlap -- +56.dp clears that row's own height plus a gap.
                     RefreshPill(
                         visible = refreshAvailable,
                         onClick = viewModel::onRefreshTapped,
                         modifier = Modifier
                             .align(Alignment.TopCenter)
-                            .padding(top = contentPadding.calculateTopPadding() + 10.dp)
+                            .padding(top = contentPadding.calculateTopPadding() + 56.dp)
                     )
                 }
             }
@@ -380,8 +436,6 @@ private fun FeedCard(
         if (isNote) {
             NoteCard(
                 item = item,
-                starred = item.isStarred,
-                onToggleStar = onToggleStar,
                 onOpen = onOpen,
                 modifier = Modifier
                     .align(Alignment.Center)
@@ -474,20 +528,20 @@ private fun FeedCard(
             RailAction(icon = Icons.Default.Close, label = "Dismiss", onClick = onDismiss)
         }
 
-        // Persistent star mark (item 3), top-left, mirroring the top-right 兄 seal. Notes carry it
-        // on their own parchment card (see NoteCard); article/video heroes are full-bleed so it
-        // sits at the screen's top-left, level with where the article seal stamps. Tapping it
+        // Persistent star mark (item 3), top-left of the full card area, mirroring the top-right 兄
+        // seal -- same position for every item type (note, article, video), rendered once here at
+        // the full-bleed outer Box rather than inside each type's own inner content (a note's mark
+        // used to be anchored to its parchment card instead of the screen, which put it in a
+        // different place than articles/videos; fixed by always positioning it here). Tapping it
         // unstars (with the ink-fade dissolve). Stamp-down animation plays on the star transition.
-        if (!isNote) {
-            StarStamp(
-                starred = item.isStarred,
-                onDark = true,
-                onClick = onToggleStar,
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(top = topPad + 48.dp, start = 20.dp)
-            )
-        }
+        StarStamp(
+            starred = item.isStarred,
+            onDark = true,
+            onClick = onToggleStar,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(top = topPad + 48.dp, start = 20.dp)
+        )
 
         // Swipe hint: an affordance nudge, not permanent chrome -- see FeedViewModel for when
         // it's eligible (first-ever Feed open, plus idle re-trigger during that same session only).
@@ -551,8 +605,6 @@ private fun Modifier.circleBorder(color: Color) = this.border(1.dp, color, Circl
 @Composable
 private fun NoteCard(
     item: com.aniki.anikiai.data.db.ItemEntity,
-    starred: Boolean,
-    onToggleStar: () -> Unit,
     onOpen: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -572,9 +624,10 @@ private fun NoteCard(
     ) {
         Box(modifier = Modifier.padding(20.dp)) {
             Column {
-                // Reserve a top band so the heading text always sits below the corner marks — the
-                // star (top-left) and seal (top-right) are absolute overlays, so toggling the star
-                // never shifts the category heading (item 3).
+                // Reserve a top band so the heading text always sits clear of the 兄 seal overlay
+                // (top-right). The star mark itself now lives outside this card entirely -- see
+                // FeedCard, which positions it at the full card area's top-left for every item type
+                // (item 3's fix: it used to be anchored here instead, inconsistent with articles/videos).
                 Spacer(Modifier.height(30.dp))
                 Text(
                     text = (item.category?.takeIf { it.isNotBlank() } ?: "Note").uppercase(),
@@ -602,16 +655,7 @@ private fun NoteCard(
                 }
             }
 
-            // Corner marks: star top-left (when starred), 兄 seal top-right — mirrored, the same
-            // placement idiom as the link/video hero (item 3), positioned absolutely so neither
-            // reflows the content.
-            StarStamp(
-                starred = starred,
-                onDark = false,
-                onClick = onToggleStar,
-                size = 22.dp,
-                modifier = Modifier.align(Alignment.TopStart)
-            )
+            // 兄 seal, top-right -- positioned absolutely so it never reflows the content below.
             SealMark(size = 26.dp, modifier = Modifier.align(Alignment.TopEnd))
         }
     }

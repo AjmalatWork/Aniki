@@ -51,7 +51,7 @@ app.post("/enrich", async (req: Request, res: Response) => {
   // configured for X-Forwarded-For to be honored instead.
   if (isRateLimited(req.ip ?? "unknown")) {
     logAndRecord(`[POST /enrich] rate limited ip=${req.ip}`, "/enrich", Date.now() - start, true);
-    res.status(429).json({ error: "Too many requests — try again in a moment" });
+    res.status(429).json({ error: "Too many requests — try again in a moment", code: "RATE_LIMITED" });
     return;
   }
 
@@ -93,11 +93,12 @@ app.post("/enrich", async (req: Request, res: Response) => {
       true
     );
     if (err instanceof QuotaExceededError) {
-      res.status(429).json({ error: err.message });
+      res.status(429).json({ error: err.message, code: "QUOTA_EXCEEDED" });
       return;
     }
     const message = err instanceof EnrichmentError ? err.message : "Enrichment failed";
-    res.status(422).json({ error: message });
+    const code = err instanceof EnrichmentError ? err.code : "GENERIC";
+    res.status(422).json({ error: message, code });
   }
 });
 

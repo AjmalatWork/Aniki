@@ -1,5 +1,5 @@
 import { fetchTranscript } from "youtube-transcript";
-import { EnrichmentError, type ExtractedContent } from "../types.js";
+import { EnrichmentError, FetchFailedError, type ExtractedContent } from "../types.js";
 
 const FETCH_TIMEOUT_MS = 15_000;
 
@@ -14,12 +14,12 @@ async function fetchOEmbed(url: string): Promise<OEmbedResponse> {
   try {
     const res = await fetch(oEmbedUrl, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (!res.ok) {
-      throw new EnrichmentError(`YouTube oEmbed failed with status ${res.status}`);
+      throw new FetchFailedError(`YouTube oEmbed failed with status ${res.status}`);
     }
     return (await res.json()) as OEmbedResponse;
   } catch (err) {
     if (err instanceof EnrichmentError) throw err;
-    throw new EnrichmentError(`Could not reach YouTube oEmbed: ${(err as Error).message}`);
+    throw new FetchFailedError(`Could not reach YouTube oEmbed: ${(err as Error).message}`);
   }
 }
 

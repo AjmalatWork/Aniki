@@ -6,6 +6,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -29,10 +30,12 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -220,6 +223,35 @@ fun PulseDot(color: Color = Seal, size: Dp = 8.dp) {
             .clip(CircleShape)
             .background(color)
     )
+}
+
+/**
+ * A static "paused" glyph (two bars in a ring) for the offline-queued state -- a PENDING item
+ * whose enrichment job is parked on WorkManager's CONNECTED constraint, not actively running.
+ * Deliberately non-animated so it reads as distinct from [PulseDot] at a glance (waiting vs.
+ * actively working), same footprint so it drops into the same call sites without a layout shift.
+ */
+@Composable
+fun PausedIndicator(color: Color = Muted, size: Dp = 8.dp) {
+    Canvas(modifier = Modifier.size(size)) {
+        val strokeWidth = size.toPx() * 0.12f
+        drawCircle(color = color, radius = (size.toPx() - strokeWidth) / 2f, style = Stroke(strokeWidth))
+
+        val barWidth = size.toPx() * 0.16f
+        val barHeight = size.toPx() * 0.42f
+        val gap = size.toPx() * 0.12f
+        val top = center.y - barHeight / 2f
+        drawRect(
+            color = color,
+            topLeft = Offset(center.x - gap / 2f - barWidth, top),
+            size = Size(barWidth, barHeight)
+        )
+        drawRect(
+            color = color,
+            topLeft = Offset(center.x + gap / 2f, top),
+            size = Size(barWidth, barHeight)
+        )
+    }
 }
 
 /** Shimmering placeholder for a not-yet-enriched item's thumbnail (Library "processing" rows). */

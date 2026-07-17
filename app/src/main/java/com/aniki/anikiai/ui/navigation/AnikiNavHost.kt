@@ -1,5 +1,7 @@
 package com.aniki.anikiai.ui.navigation
 
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -97,7 +99,21 @@ fun AnikiNavHost(
             }
         }
     ) { innerPadding ->
-        NavHost(navController = navController, startDestination = AnikiDestinations.FEED) {
+        // No transitions on any destination -- every navigation (tab switch AND pushed screens like
+        // Detail/Settings) is an instant swap, so nothing crossfades and the tab switch is no longer
+        // the one animated-vs-instant outlier. Killing the default ~700ms crossfade is also what
+        // collapses the old "bottom bar flips instantly, screen ~half a second behind" desync down to
+        // an imperceptible ~1-frame content swap (the desync was the crossfade DURATION, not a
+        // structural frame issue) -- see git history for the prior when-based tab restructure this
+        // replaces.
+        NavHost(
+            navController = navController,
+            startDestination = AnikiDestinations.FEED,
+            enterTransition = { EnterTransition.None },
+            exitTransition = { ExitTransition.None },
+            popEnterTransition = { EnterTransition.None },
+            popExitTransition = { ExitTransition.None }
+        ) {
             composable(AnikiDestinations.FEED) {
                 FeedScreen(
                     repository = repository,

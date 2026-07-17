@@ -68,5 +68,18 @@ data class ItemEntity(
     // this" landing animation has already played for this item. Only ever meaningful when isDemo
     // is true; see FeedViewModel.takeFreshSnapshot(), which sets this the moment it decides to animate the
     // item so a later refresh() (re-entering Feed) or a fresh app launch never replays it.
-    val demoLandingAnimationShown: Boolean = false
+    val demoLandingAnimationShown: Boolean = false,
+    // Local-only (not part of SyncItemDto/synced) -- why the last enrichment attempt landed on
+    // NEEDS_ATTENTION, if it did. errorCode is the server's machine-readable EnrichmentErrorCode
+    // (RATE_LIMITED | QUOTA_EXCEEDED | FETCH_FAILED | EXTRACTION_FAILED | GENERIC), or null for a
+    // failure with no server response at all (a raw network exception -- see EnrichmentWorker,
+    // which deliberately doesn't distinguish those further). errorMessage is the server's own
+    // readable message, shown as-is in place of the old hardcoded "Couldn't process this item."
+    // Both cleared back to null the moment the item next reaches ENRICHED or PENDING (see
+    // ItemRepository.applyEnrichment/updateNoteBody) so a stale failure never lingers past the
+    // outcome it described. Kept local-only rather than synced: it's diagnostic metadata about one
+    // device's attempt, not user content, and the underlying `status` (which IS synced) already
+    // tells another device an item needs attention even without the detail.
+    val errorCode: String? = null,
+    val errorMessage: String? = null
 )

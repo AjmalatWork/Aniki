@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         EngagementEventEntity::class,
         ItemFtsEntity::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = false
 )
 abstract class AnikiDatabase : RoomDatabase() {
@@ -161,6 +161,21 @@ abstract class AnikiDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Adds errorCode/errorMessage (local-only, not synced) -- persists *why* the last
+         * enrichment attempt landed on NEEDS_ATTENTION (quota/rate-limit/fetch/extraction failure,
+         * from the server's EnrichmentErrorCode) so the UI can show the real message instead of one
+         * hardcoded generic string. Existing rows default to NULL, which is correct: any item
+         * already sitting in NEEDS_ATTENTION before this migration has no recorded reason, so it
+         * falls back to the old generic copy until its next enrichment attempt fills these in.
+         */
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE items ADD COLUMN errorCode TEXT")
+                db.execSQL("ALTER TABLE items ADD COLUMN errorMessage TEXT")
+            }
+        }
+
         fun getInstance(context: Context): AnikiDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -169,7 +184,7 @@ abstract class AnikiDatabase : RoomDatabase() {
                     "aniki.db"
                 ).addMigrations(
                     MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
-                    MIGRATION_6_7, MIGRATION_7_8
+                    MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9
                 ).build().also { INSTANCE = it }
             }
         }

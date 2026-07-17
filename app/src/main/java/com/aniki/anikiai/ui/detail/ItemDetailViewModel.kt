@@ -7,6 +7,8 @@ import com.aniki.anikiai.data.db.ItemType
 import com.aniki.anikiai.data.db.ItemWithTags
 import com.aniki.anikiai.data.repository.ItemRepository
 import com.aniki.anikiai.sync.SyncWorker
+import com.aniki.anikiai.util.isOnline
+import com.aniki.anikiai.util.observeOnline
 import com.aniki.anikiai.work.EnrichmentScheduler
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -26,6 +28,10 @@ class ItemDetailViewModel(
 
     val item: StateFlow<ItemWithTags?> = repository.observeItemWithTags(itemId)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** Drives the offline-queued status card (see ItemDetailScreen's PENDING branch). */
+    val isOnline: StateFlow<Boolean> = observeOnline(appContext)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), isOnline(appContext))
 
     private var titleSaveJob: Job? = null
     private var bodySaveJob: Job? = null

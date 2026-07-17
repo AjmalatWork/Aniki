@@ -29,8 +29,10 @@ data class EnrichResponseDto(
     val eventDate: String?
 )
 
+/** [code] is one of RATE_LIMITED | QUOTA_EXCEEDED | FETCH_FAILED | EXTRACTION_FAILED | GENERIC
+ *  (server/src/types.ts's EnrichmentErrorCode) -- null for a malformed/unexpected error body. */
 @Serializable
-data class EnrichErrorDto(val error: String)
+data class EnrichErrorDto(val error: String, val code: String? = null)
 
 @Serializable
 data class ExtractThumbnailRequestDto(val sourceUrl: String)

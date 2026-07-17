@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -66,12 +67,15 @@ import com.aniki.anikiai.ui.theme.MatchaWash
 import com.aniki.anikiai.ui.theme.Muted
 import com.aniki.anikiai.ui.theme.Paper
 import com.aniki.anikiai.ui.theme.Paper2
+import com.aniki.anikiai.ui.theme.PausedIndicator
 import com.aniki.anikiai.ui.theme.PulseDot
 import com.aniki.anikiai.ui.theme.Seal
 import com.aniki.anikiai.ui.theme.SealMark
 import com.aniki.anikiai.ui.theme.ShimmerBox
 import com.aniki.anikiai.ui.theme.TypeIcon
 import com.aniki.anikiai.ui.theme.ItemThumbnail
+import com.aniki.anikiai.util.enrichmentCanRetry
+import com.aniki.anikiai.util.enrichmentErrorMessageShort
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -95,6 +99,7 @@ fun LibraryScreen(
     val starredOnly by viewModel.starredOnly.collectAsState()
     val sortMode by viewModel.sortMode.collectAsState()
     val hasActiveFilter by viewModel.hasActiveFilter.collectAsState()
+    val isOnline by viewModel.isOnline.collectAsState()
 
     Scaffold(
         containerColor = Paper,
@@ -157,7 +162,7 @@ fun LibraryScreen(
             } else {
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     items(items, key = { it.item.id }) { itemWithTags ->
-                        ItemRow(itemWithTags, onOpen = onOpenItem, onRetry = viewModel::retry)
+                        ItemRow(itemWithTags, isOnline = isOnline, onOpen = onOpenItem, onRetry = viewModel::retry)
                         Box(Modifier.fillMaxWidth().height(1.dp).background(InkLine))
                     }
                 }
@@ -329,10 +334,16 @@ private fun EmptyState(hasActiveFilter: Boolean, modifier: Modifier = Modifier) 
 }
 
 @Composable
-private fun ItemRow(itemWithTags: ItemWithTags, onOpen: (String) -> Unit, onRetry: (String) -> Unit) {
+private fun ItemRow(
+    itemWithTags: ItemWithTags,
+    isOnline: Boolean,
+    onOpen: (String) -> Unit,
+    onRetry: (String) -> Unit
+) {
     val item = itemWithTags.item
     val needsAttention = item.status == ItemStatus.NEEDS_ATTENTION
     val enriched = item.status == ItemStatus.ENRICHED
+    val offlineQueued = item.status == ItemStatus.PENDING && !isOnline
 
     Row(
         modifier = Modifier
@@ -376,14 +387,28 @@ private fun ItemRow(itemWithTags: ItemWithTags, onOpen: (String) -> Unit, onRetr
             )
             Spacer(Modifier.height(3.dp))
 
-            if (item.status == ItemStatus.PENDING) {
+            if (offlineQueued) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    PausedIndicator(size = 7.dp)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "Waiting for connection to process…",
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                        color = Muted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            } else if (item.status == ItemStatus.PENDING) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     PulseDot(size = 7.dp)
                     Spacer(Modifier.width(6.dp))
                     Text(
                         "Aniki is reading this…",
                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                        color = Seal
+                        color = Seal,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             } else {
@@ -402,17 +427,29 @@ private fun ItemRow(itemWithTags: ItemWithTags, onOpen: (String) -> Unit, onRetr
             if (needsAttention) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        "Couldn't read",
+                        enrichmentErrorMessageShort(item.errorCode, item.type),
                         style = MaterialTheme.typography.labelSmall,
                         color = Seal,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
+                            .weight(1f, fill = false)
                             .clip(RoundedCornerShape(6.dp))
                             .background(Seal.copy(alpha = 0.10f))
                             .padding(horizontal = 7.dp, vertical = 3.dp)
                     )
-                    Spacer(Modifier.width(8.dp))
-                    TextButton(onClick = { onRetry(item.id) }) {
-                        Text("Retry", style = MaterialTheme.typography.labelLarge, color = Kon)
+                    if (enrichmentCanRetry(item.errorCode)) {
+                        Spacer(Modifier.width(8.dp))
+                        // The message chip above is weight(1f, fill=false) + maxLines=1 + ellipsis,
+                        // so it already truncates instead of squeezing this button on a narrow row;
+                        // widthIn is defensive insurance against the same compression bug fixed on
+                        // the Detail screen's multi-line version of this banner.
+                        TextButton(
+                            onClick = { onRetry(item.id) },
+                            modifier = Modifier.widthIn(min = 72.dp)
+                        ) {
+                            Text("Retry", style = MaterialTheme.typography.labelLarge, color = Kon)
+                        }
                     }
                 }
             } else if (enriched && itemWithTags.tags.isNotEmpty()) {

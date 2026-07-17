@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -75,11 +76,14 @@ import com.aniki.anikiai.ui.theme.MatchaWash
 import com.aniki.anikiai.ui.theme.Muted
 import com.aniki.anikiai.ui.theme.Paper
 import com.aniki.anikiai.ui.theme.Paper2
+import com.aniki.anikiai.ui.theme.PausedIndicator
 import com.aniki.anikiai.ui.theme.PulseDot
 import com.aniki.anikiai.ui.theme.Seal
 import com.aniki.anikiai.ui.theme.SealMark
 import com.aniki.anikiai.ui.theme.ItemThumbnail
 import com.aniki.anikiai.ui.theme.weightedShadow
+import com.aniki.anikiai.util.enrichmentCanRetry
+import com.aniki.anikiai.util.enrichmentErrorMessageLong
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -96,6 +100,7 @@ fun ItemDetailScreen(
         }
     )
     val itemWithTags by viewModel.item.collectAsState()
+    val isOnline by viewModel.isOnline.collectAsState()
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
     Scaffold(containerColor = Paper) { padding ->
@@ -107,6 +112,7 @@ fun ItemDetailScreen(
         } else {
             ItemDetailContent(
                 itemWithTags = current,
+                isOnline = isOnline,
                 modifier = Modifier.fillMaxSize(),
                 topInset = padding.calculateTopPadding(),
                 bottomInset = padding.calculateBottomPadding(),
@@ -144,6 +150,7 @@ fun ItemDetailScreen(
 @Composable
 private fun ItemDetailContent(
     itemWithTags: ItemWithTags,
+    isOnline: Boolean,
     modifier: Modifier = Modifier,
     topInset: androidx.compose.ui.unit.Dp,
     bottomInset: androidx.compose.ui.unit.Dp,
@@ -220,15 +227,28 @@ private fun ItemDetailContent(
                             }
                         }
                         ItemStatus.NEEDS_ATTENTION -> {
+                            val canRetry = enrichmentCanRetry(item.errorCode)
                             ProcessingStatusCard(
-                                message = "Couldn't process this item.",
-                                actionLabel = "Retry",
-                                onAction = onRetry,
-                                isError = true
+                                message = enrichmentErrorMessageLong(item.errorCode, item.type),
+                                actionLabel = if (canRetry) "Retry" else null,
+                                onAction = if (canRetry) onRetry else null,
+                                variant = StatusVariant.ERROR
                             )
                         }
-                        else -> {
-                            ProcessingStatusCard(message = "Aniki is reading this…", actionLabel = null, onAction = null)
+                        else -> if (item.status == ItemStatus.PENDING && !isOnline) {
+                            ProcessingStatusCard(
+                                message = "Waiting for connection to process…",
+                                actionLabel = null,
+                                onAction = null,
+                                variant = StatusVariant.OFFLINE
+                            )
+                        } else {
+                            ProcessingStatusCard(
+                                message = "Aniki is reading this…",
+                                actionLabel = null,
+                                onAction = null,
+                                variant = StatusVariant.PROCESSING
+                            )
                         }
                     }
 
@@ -335,35 +355,66 @@ private fun SectionLabel(text: String) {
     Spacer(Modifier.height(8.dp))
 }
 
+/** PROCESSING = the normal "Aniki is reading this…" pulsing state; OFFLINE = PENDING with no
+ *  connectivity (job parked on WorkManager's CONNECTED constraint, not actually running); ERROR =
+ *  NEEDS_ATTENTION. Three states, three distinct treatments -- see [ProcessingStatusCard]. */
+private enum class StatusVariant { PROCESSING, OFFLINE, ERROR }
+
+/** Comfortably fits "Retry" on one line with the button's own padding -- without this, a Retry
+ *  button squeezed by a long, wrapping message text next to it in a Row can compress below its
+ *  label's natural width, wrapping "Retry" one letter per line. */
+private val RETRY_BUTTON_MIN_WIDTH = 72.dp
+
 @Composable
 private fun ProcessingStatusCard(
     message: String,
     actionLabel: String?,
     onAction: (() -> Unit)?,
-    isError: Boolean = false
+    variant: StatusVariant = StatusVariant.PROCESSING
 ) {
-    Row(
+    val hasAction = actionLabel != null && onAction != null
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(Paper2)
-            .padding(14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
+            .padding(14.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (!isError) {
-                PulseDot(size = 7.dp)
-                Spacer(Modifier.width(8.dp))
+        Row(verticalAlignment = Alignment.Top) {
+            when (variant) {
+                StatusVariant.PROCESSING -> {
+                    Box(Modifier.padding(top = 6.dp)) { PulseDot(size = 7.dp) }
+                    Spacer(Modifier.width(8.dp))
+                }
+                StatusVariant.OFFLINE -> {
+                    Box(Modifier.padding(top = 6.dp)) { PausedIndicator(size = 7.dp) }
+                    Spacer(Modifier.width(8.dp))
+                }
+                StatusVariant.ERROR -> Unit
             }
+            // weight(1f) is what lets a long message wrap onto multiple lines within the available
+            // width instead of demanding its full unwrapped width and squeezing the Retry button
+            // below it -- see [RETRY_BUTTON_MIN_WIDTH].
             Text(
                 text = message,
                 style = MaterialTheme.typography.bodyMedium,
-                color = if (isError) Seal else Kon
+                color = when (variant) {
+                    StatusVariant.ERROR -> Seal
+                    StatusVariant.OFFLINE -> Muted
+                    StatusVariant.PROCESSING -> Kon
+                },
+                modifier = Modifier.weight(1f)
             )
         }
-        if (actionLabel != null && onAction != null) {
-            TextButton(onClick = onAction) { Text(actionLabel, color = Kon) }
+        // Retry sits below the message, right-aligned, rather than beside it -- a message/action
+        // banner that has to accommodate both a short status word ("Aniki is reading this…") and a
+        // full sentence-length failure reason reads more consistently stacked than side-by-side.
+        if (hasAction) {
+            Spacer(Modifier.height(10.dp))
+            TextButton(
+                onClick = onAction!!,
+                modifier = Modifier.align(Alignment.End).widthIn(min = RETRY_BUTTON_MIN_WIDTH)
+            ) { Text(actionLabel!!, color = Kon) }
         }
     }
 }

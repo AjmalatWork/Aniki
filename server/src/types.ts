@@ -50,7 +50,31 @@ export interface ExtractThumbnailResponse {
   thumbnailUrl: string | null;
 }
 
-export class EnrichmentError extends Error {}
+/** Machine-readable failure category, surfaced to the client alongside `message` so it can persist
+ *  and display the real per-failure copy instead of a single generic string, and (for
+ *  QUOTA_EXCEEDED specifically) skip its normal rapid retry -- see EnrichmentWorker.kt. */
+export type EnrichmentErrorCode =
+  | "RATE_LIMITED"
+  | "QUOTA_EXCEEDED"
+  | "FETCH_FAILED"
+  | "EXTRACTION_FAILED"
+  | "GENERIC";
+
+export class EnrichmentError extends Error {
+  readonly code: EnrichmentErrorCode = "GENERIC";
+}
+
+/** The remote fetch itself failed -- a non-OK HTTP status or a network-level error reaching the
+ *  source URL (article page or YouTube's oEmbed endpoint). */
+export class FetchFailedError extends EnrichmentError {
+  override readonly code: EnrichmentErrorCode = "FETCH_FAILED";
+}
+
+/** The fetch succeeded but the page couldn't be turned into usable content -- unparseable markup
+ *  with no OpenGraph fallback (typically paywalled or blocked). */
+export class ExtractionFailedError extends EnrichmentError {
+  override readonly code: EnrichmentErrorCode = "EXTRACTION_FAILED";
+}
 
 /** Thrown when the daily Gemini call cap is reached; caught separately to return 429 instead of 422. */
 export class QuotaExceededError extends Error {}

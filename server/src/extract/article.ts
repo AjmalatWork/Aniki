@@ -1,7 +1,7 @@
 import { JSDOM } from "jsdom";
 import { Readability } from "@mozilla/readability";
 import { assertSafeUrl } from "../security/urlGuard.js";
-import { EnrichmentError, type ExtractedContent } from "../types.js";
+import { EnrichmentError, ExtractionFailedError, FetchFailedError, type ExtractedContent } from "../types.js";
 
 const FETCH_TIMEOUT_MS = 15_000;
 const MIN_READABLE_LENGTH = 200;
@@ -67,7 +67,7 @@ export async function extractArticle(url: string): Promise<ExtractedContent> {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (!res.ok) {
-      throw new EnrichmentError(`Fetch failed with status ${res.status}`);
+      throw new FetchFailedError(`Fetch failed with status ${res.status}`);
     }
     // fetch() follows redirects by default; the pre-check above only validated the URL the
     // client gave us, not wherever a redirect chain actually landed. Check the final URL too,
@@ -77,8 +77,11 @@ export async function extractArticle(url: string): Promise<ExtractedContent> {
     }
     html = await res.text();
   } catch (err) {
+    // Any EnrichmentError here (FetchFailedError above, or an SSRF rejection from the redirect
+    // recheck) already carries its own code/message -- only a raw fetch()/timeout exception needs
+    // wrapping into a FetchFailedError.
     if (err instanceof EnrichmentError) throw err;
-    throw new EnrichmentError(
+    throw new FetchFailedError(
       `Could not fetch article URL: ${(err as Error).message}`
     );
   }
@@ -108,7 +111,7 @@ export async function extractArticle(url: string): Promise<ExtractedContent> {
   if (!content) {
     const fallback = [ogTitle, ogDescription].filter(Boolean).join("\n\n").trim();
     if (!fallback) {
-      throw new EnrichmentError(
+      throw new ExtractionFailedError(
         "Article is unparseable and has no OpenGraph fallback (likely paywalled or blocked)"
       );
     }
