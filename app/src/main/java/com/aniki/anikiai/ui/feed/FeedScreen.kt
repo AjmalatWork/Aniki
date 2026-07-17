@@ -55,9 +55,9 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -112,6 +112,11 @@ import com.aniki.anikiai.ui.theme.weightedShadow
  * card type drifting to its own one-off value ("polish pass 2" item 3).
  */
 private val BOTTOM_ZONE_INSET = 46.dp
+
+/** Duration of the refresh-pill blur-in leg (see the blurRadius/RefreshPill.onClick comments in
+ *  FeedScreen) -- the delay before the reorder is applied is matched exactly to this. */
+private const val BLUR_IN_MS = 150
+
 @Composable
 fun FeedScreen(
     repository: ItemRepository,
@@ -129,8 +134,8 @@ fun FeedScreen(
     val showHint by viewModel.showHint.collectAsState()
     val hintTrigger by viewModel.hintTrigger.collectAsState()
     val refreshAvailable by viewModel.refreshAvailable.collectAsState()
-    val scrollToTop by viewModel.scrollToTopTrigger.collectAsState()
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
 
     // Slice 2, item 1: entering the Feed reuses the frozen per-session order (re-projecting current
     // data onto it) rather than re-ranking, so a Detail round-trip lands on the same card. The order
@@ -176,9 +181,19 @@ fun FeedScreen(
 
                 // Brief blur while a pill-driven refresh reshuffles the stack and jumps to the top,
                 // so the reorder isn't visible mid-flight — it "reveals" the new order once settled
-                // (item 4). Blur is a no-op below API 31 (feedBlur); the scroll still happens.
+                // (item 4). Blur is a no-op below API 31 (feedBlur); the jump still happens.
+                //
+                // The blur-in and blur-out legs use different (asymmetric) tweens on purpose: the
+                // RefreshPill's onClick below awaits BLUR_IN_MS of blur-in before it lets the reorder
+                // actually reach the pager (via viewModel.refreshFeed()), specifically so the swap is
+                // never visible even partially-blurred. The blur-out, by contrast, has nothing to hide
+                // and can fade at a more comfortable, slightly slower pace.
                 var refreshing by remember { mutableStateOf(false) }
-                val blurRadius by animateDpAsState(if (refreshing) 16.dp else 0.dp, tween(240), label = "feedBlur")
+                val blurRadius by animateDpAsState(
+                    targetValue = if (refreshing) 16.dp else 0.dp,
+                    animationSpec = tween(if (refreshing) BLUR_IN_MS else 220),
+                    label = "feedBlur"
+                )
 
                 // Keyed on settledPage ALONE, deliberately not also on `items`: `items` changes on
                 // every background reprojection (a star toggled elsewhere, a reprojectFrozen after
@@ -212,39 +227,6 @@ fun FeedScreen(
                     onDispose {
                         latestItems.getOrNull(pagerState.settledPage)?.let { viewModel.onPageSettled(it.item.id) }
                     }
-                }
-
-                // Pill tapped -> onRefreshTapped() rebuilt `items` and bumped scrollToTop: blur,
-                // fast-scroll to the first card of the refreshed order, then clear the blur.
-                //
-                // scrollToTop is a counter on the ViewModel (persists across this composable's own
-                // teardown/remount, e.g. a tab switch away and back), but LaunchedEffect's "only
-                // re-run when the key changes" tracking does NOT persist across a remount -- a fresh
-                // LaunchedEffect(scrollToTop) sees whatever the CURRENT counter value is as a brand
-                // new key on its very first run, even if that value was set long ago in an earlier
-                // visit. Left unguarded, that replayed the whole blur+scroll-to-top animation on
-                // *every* return to Feed for the rest of the session, the instant the pill had been
-                // tapped even once. seenScrollToTop is the fix: it snapshots whatever the counter
-                // already was at THIS composable's mount time, so that baseline value is recognized
-                // as "old news" on the first effect run, and only a genuine increment that happens
-                // while this Feed instance is actually alive and on-screen triggers the animation.
-                var seenScrollToTop by remember { mutableIntStateOf(scrollToTop) }
-                LaunchedEffect(scrollToTop) {
-                    if (scrollToTop == seenScrollToTop) return@LaunchedEffect
-                    seenScrollToTop = scrollToTop
-                    refreshing = true
-                    delay(80) // let the re-ranked stack compose under the blur before it moves
-                    // animateScrollToPage suspends until that scroll animation actually finishes, so
-                    // clearing `refreshing` right after it returns ties the blur's fade-out to the
-                    // real scroll-completion event. An explicit tween (not the default spring)
-                    // matters here: a spring's settling tail is visually imperceptible but the
-                    // coroutine stays suspended through it, so "animation complete" lands noticeably
-                    // later than "looks complete" -- with a spring this was the actual source of the
-                    // blur still looking like it lingered after the scroll appeared done. A tween has
-                    // no such tail, so the coroutine resumes (and the blur starts its own fade-out)
-                    // right as the scroll visually stops.
-                    pagerState.animateScrollToPage(0, animationSpec = tween(durationMillis = 380))
-                    refreshing = false
                 }
 
                 Box(modifier.fillMaxSize().background(Ink)) {
@@ -287,7 +269,27 @@ fun FeedScreen(
                     // the two never overlap -- +56.dp clears that row's own height plus a gap.
                     RefreshPill(
                         visible = refreshAvailable,
-                        onClick = viewModel::onRefreshTapped,
+                        onClick = {
+                            // Owns the whole sequence directly (rather than reacting to a
+                            // ViewModel-driven counter -- see the blurRadius comment above): blur in
+                            // first, wait for it to actually be established, ONLY THEN let the
+                            // reordered data reach the pager, THEN scroll to the top card -- still
+                            // fully blurred throughout -- and only unblur once that scroll finishes.
+                            // Nothing is visible mid-swap because the swap can't happen until the blur
+                            // already has; the scroll stays a real, visible-through-the-blur glide
+                            // (not an instant jump) since that motion is itself part of the "refreshing"
+                            // feel, not just an implementation detail to hide.
+                            coroutineScope.launch {
+                                refreshing = true
+                                delay(BLUR_IN_MS.toLong())
+                                viewModel.refreshFeed() // suspends until the new order is in `state`
+                                // Same reasoning as the pre-refactor version: an explicit tween (not
+                                // the default spring) so the coroutine resumes right as the scroll
+                                // visually stops, not after an imperceptible spring settling tail.
+                                pagerState.animateScrollToPage(0, animationSpec = tween(durationMillis = 380))
+                                refreshing = false
+                            }
+                        },
                         modifier = Modifier
                             .align(Alignment.TopCenter)
                             .padding(top = contentPadding.calculateTopPadding() + 56.dp)

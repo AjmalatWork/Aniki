@@ -43,8 +43,8 @@ sealed interface FeedUiState {
  * Slice 2, item 1: "session" is the whole process run (see the companion object). Entering the Feed
  * ([onEnter]) re-projects current item data onto the *existing* frozen order without reordering, so
  * opening an item and coming back lands on the same card. The order is recomputed only on an
- * explicit refresh — the session's first open, or the "Feed updated" pill ([onRefreshTapped]) —
- * both funneling through [takeFreshSnapshot]. When the underlying ranking inputs drift from the
+ * explicit refresh — the session's first open, or the "Feed updated" pill ([refreshFeed]) — both
+ * funneling through [applyFreshSnapshot]. When the underlying ranking inputs drift from the
  * snapshot (a new enrichment, a star toggled, a delete), the pill offers that refresh; ordinary
  * swiping/opening never trips it. Live per-card state (star) is patched in place without reordering.
  */
@@ -64,14 +64,9 @@ class FeedViewModel(
 
     /** True once the live library has diverged from the frozen snapshot's ranking inputs (a newly
      *  enriched item, a star toggled, an item trashed). The Feed shows the "Feed updated" pill;
-     *  tapping it ([onRefreshTapped]) re-ranks and clears this. */
+     *  tapping it ([refreshFeed]) re-ranks and clears this. */
     private val _refreshAvailable = MutableStateFlow(false)
     val refreshAvailable: StateFlow<Boolean> = _refreshAvailable
-
-    /** One-shot counter the Feed watches to fast-scroll back to the first card after a pill-driven
-     *  refresh (item 4). Incremented only on an explicit refresh, never on a plain re-entry. */
-    private val _scrollToTopTrigger = MutableStateFlow(0)
-    val scrollToTopTrigger: StateFlow<Int> = _scrollToTopTrigger
 
     init {
         // Watch the live library so a background change while the Feed is open — enrichment
@@ -216,21 +211,31 @@ class FeedViewModel(
         logSessionSummary() // in case onLeaveFeed was skipped (e.g. process death) since the last open
         viewModelScope.launch {
             val frozen = sessionOrderIds
-            if (frozen == null) takeFreshSnapshot(scrollToTop = false) else reprojectFrozen(frozen)
+            if (frozen == null) applyFreshSnapshot() else reprojectFrozen(frozen)
         }
     }
 
     /**
      * The "Feed updated" pill was tapped (item 4) — the one in-session path that changes the frozen
-     * order. Re-ranks from scratch (starred items regroup to the top, newly-enriched items join),
-     * clears the pill, and signals the Feed to fast-scroll back to the first card.
+     * order. Re-ranks from scratch (starred items regroup to the top, newly-enriched items join)
+     * and clears the pill.
+     *
+     * Deliberately a `suspend fun` the caller awaits directly, rather than a fire-and-forget event
+     * the ViewModel reacts to: FeedScreen owns the whole blur-then-swap-then-scroll-then-unblur
+     * choreography and needs to know exactly when the new order has actually landed in [state], so
+     * it can hold off applying it until the screen is already blurred. Racing two independently
+     * observed StateFlows (state changing immediately, a separate trigger reacting after) used to
+     * let the reordered card flash into view, unblurred, for a frame or two before the hide caught
+     * up. Still launched on [viewModelScope] internally (not the caller's own scope) so a refresh
+     * survives even if the caller is torn down mid-flight -- e.g. the user switches tabs while the
+     * blur is still ramping.
      */
-    fun onRefreshTapped() {
-        viewModelScope.launch { takeFreshSnapshot(scrollToTop = true) }
+    suspend fun refreshFeed() {
+        viewModelScope.launch { applyFreshSnapshot() }.join()
     }
 
     /** Recompute the ranked order from the live library and make it the new frozen session order. */
-    private suspend fun takeFreshSnapshot(scrollToTop: Boolean) {
+    private suspend fun applyFreshSnapshot() {
         val snapshot = repository.getItemsWithTagsSnapshot()
         cachedWeights = repository.computeUserTagWeights()
         // Ranking is pure CPU work (sort + scoring pass) — off the main dispatcher so a large
@@ -254,7 +259,6 @@ class FeedViewModel(
             repository.markDemoLandingAnimationShown(demoLandingItemId)
         }
         _state.value = if (items.isEmpty()) FeedUiState.Empty else FeedUiState.Content(items, demoLandingItemId)
-        if (scrollToTop) _scrollToTopTrigger.value += 1
         Timber.i("feed snapshot: candidates=%d", items.size)
     }
 
