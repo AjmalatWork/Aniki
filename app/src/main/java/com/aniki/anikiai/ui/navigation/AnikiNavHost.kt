@@ -3,6 +3,8 @@ package com.aniki.anikiai.ui.navigation
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +27,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -200,6 +203,13 @@ private fun AnikiBottomBar(
         modifier = Modifier
             .fillMaxWidth()
             .background(container)
+            // Feed renders its content full-bleed underneath this bar (the translucent-over-immersive
+            // look), and its video/article heroes are themselves fillMaxSize().clickable(onOpen) --
+            // without this, a tap landing in the bar's own empty space (the padding around BarItem/
+            // CaptureButton) isn't consumed by anything here and falls through to that layer beneath,
+            // opening the item's source. This no-op clickable claims every tap in the bar's bounds so
+            // nothing passes through, regardless of which screen is rendered behind it.
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
             .windowInsetsPadding(WindowInsets.navigationBars)
     ) {
         Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(topLine))
