@@ -16,6 +16,14 @@ private const val USABLE_STATUS = "ENRICHED"
 /**
  * Pure, offline ranking. Scores every usable item, sorts by score (recency as a stable tiebreak),
  * then applies the diversity post-pass. No Android/DB/UI dependencies — unit-tested directly.
+ *
+ * Starred items are grouped as a block ahead of the rest (Slice 2, item 4: a refreshed feed shows
+ * "starred items grouped at the top, sorted by the same relevance scoring, not recency-of-star").
+ * Each block is scored, sorted and diversified independently, then concatenated — so within the
+ * starred block order is still relevance (not star time), and the diversity cap is honored inside
+ * each block rather than across the seam. This is a deliberate hard grouping rather than leaning on
+ * `w.wStar` alone, whose additive bump can't guarantee a low-scoring starred item outranks a
+ * high-scoring unstarred one. A feed with no starred items is unchanged (the whole set is one block).
  */
 fun buildFeed(
     items: List<FeedCandidate>,
@@ -23,8 +31,21 @@ fun buildFeed(
     now: Long,
     weights: RankingWeights = RankingWeights()
 ): List<FeedCandidate> {
-    val scored = items
-        .filter { it.status == USABLE_STATUS }
+    val usable = items.filter { it.status == USABLE_STATUS }
+    val (starred, rest) = usable.partition { it.isStarred }
+    return rankBlock(starred, userTagWeights, now, weights) +
+        rankBlock(rest, userTagWeights, now, weights)
+}
+
+/** Score + sort + diversify one block of candidates (see [buildFeed] for why blocks stay separate). */
+private fun rankBlock(
+    block: List<FeedCandidate>,
+    userTagWeights: Map<String, Double>,
+    now: Long,
+    weights: RankingWeights
+): List<FeedCandidate> {
+    if (block.isEmpty()) return emptyList()
+    val scored = block
         .map { it to scoreItem(it, userTagWeights, now, weights) }
         .sortedWith(
             compareByDescending<Pair<FeedCandidate, Double>> { it.second }

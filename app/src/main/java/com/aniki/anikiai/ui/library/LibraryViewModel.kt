@@ -34,6 +34,12 @@ class LibraryViewModel(
     private val _selectedType = MutableStateFlow<String?>(null)
     val selectedType: StateFlow<String?> = _selectedType
 
+    /** Slice 2, item 5: the "Starred" chip. Orthogonal to type in the data model, but presented as
+     *  one more single-select chip alongside All/Links/Videos/Notes, so selecting it clears the
+     *  type filter and vice-versa (see [setTypeFilter]/[setStarredOnly]). */
+    private val _starredOnly = MutableStateFlow(false)
+    val starredOnly: StateFlow<Boolean> = _starredOnly
+
     private val _sortMode = MutableStateFlow(SortMode.DATE_SAVED)
     val sortMode: StateFlow<SortMode> = _sortMode
 
@@ -47,19 +53,20 @@ class LibraryViewModel(
         .flatMapLatest { query -> repository.searchItems(query) }
 
     val items: StateFlow<List<ItemWithTags>> = combine(
-        searchResults, _selectedTagIds, _selectedType, _sortMode
-    ) { list, tagIds, type, sort ->
+        searchResults, _selectedTagIds, _selectedType, _starredOnly, _sortMode
+    ) { list, tagIds, type, starredOnly, sort ->
         list
             .filter { tagIds.isEmpty() || it.tags.any { tag -> tag.id in tagIds } }
             .filter { type == null || it.item.type == type }
+            .filter { !starredOnly || it.item.isStarred }
             .let { filtered -> sortItems(filtered, sort) }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    /** True if search/tag/type filtering is narrowing the list — distinguishes "no results" from "nothing saved yet". */
+    /** True if search/tag/type/starred filtering is narrowing the list — distinguishes "no results" from "nothing saved yet". */
     val hasActiveFilter: StateFlow<Boolean> = combine(
-        _searchQuery, _selectedTagIds, _selectedType
-    ) { query, tagIds, type ->
-        query.isNotBlank() || tagIds.isNotEmpty() || type != null
+        _searchQuery, _selectedTagIds, _selectedType, _starredOnly
+    ) { query, tagIds, type, starredOnly ->
+        query.isNotBlank() || tagIds.isNotEmpty() || type != null || starredOnly
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     private fun sortItems(list: List<ItemWithTags>, sort: SortMode): List<ItemWithTags> = when (sort) {
@@ -80,6 +87,12 @@ class LibraryViewModel(
 
     fun setTypeFilter(type: String?) {
         _selectedType.value = type
+        if (type != null) _starredOnly.value = false // type and Starred are one mutually-exclusive chip row
+    }
+
+    fun setStarredOnly(starred: Boolean) {
+        _starredOnly.value = starred
+        if (starred) _selectedType.value = null // selecting Starred clears any type filter
     }
 
     fun setSortMode(mode: SortMode) {

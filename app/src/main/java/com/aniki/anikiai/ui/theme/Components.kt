@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -172,6 +175,31 @@ fun SealMark(
             )
         }
     }
+}
+
+/**
+ * The oxblood star mark — Aniki's "starred / keep resurfacing this" stamp (Slice 2, item 3). A
+ * small filled star in the seal palette, tipped at the same −8° as the outlined [SealMark] so the
+ * two read as a matched pair when they sit at opposite top corners of a Feed card (seal top-right,
+ * star top-left). Purely the resting mark — the stamp-down / ink-fade animation lives at the call
+ * site (FeedScreen) so this stays reusable anywhere a static "starred" badge is wanted.
+ *
+ * @param onDark use [SealDark] (legible on the immersive Feed's ink ground) instead of [Seal].
+ */
+@Composable
+fun StarMark(
+    size: Dp = 22.dp,
+    onDark: Boolean = false,
+    rotation: Float = -8f,
+    modifier: Modifier = Modifier
+) {
+    val color = if (onDark) SealDark else Seal
+    Icon(
+        imageVector = Icons.Filled.Star,
+        contentDescription = null,
+        tint = color,
+        modifier = modifier.size(size).rotate(rotation)
+    )
 }
 
 /** The "Aniki is reading this…" pulsing dot — Library processing rows, the Share sheet. */

@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aniki.anikiai.data.db.ItemEntity
+import com.aniki.anikiai.data.db.ItemStatus
 import com.aniki.anikiai.data.db.ItemWithTags
 import com.aniki.anikiai.data.repository.ItemRepository
 import com.aniki.anikiai.feed.FeedCandidate
@@ -27,7 +28,7 @@ sealed interface FeedUiState {
     /**
      * @param demoLandingItemId the onboarding demo item's id, only on the one Feed session where
      *   it should play its one-time "you just shared this" landing animation (see
-     *   FeedViewModel.refresh()); null otherwise, including every later session. Cleared to null
+     *   FeedViewModel.takeFreshSnapshot()); null otherwise, including every later session. Cleared to null
      *   by [FeedViewModel.onLandingAnimationPlayed] once FeedCard finishes playing it, so
      *   scrolling away and back within the same session doesn't replay it either.
      */
@@ -36,10 +37,16 @@ sealed interface FeedUiState {
 
 /**
  * The Feed order is a **frozen per-session snapshot**, not a live Room Flow: engagement writes
- * (lastShownAt, SHOWN/DWELL events) would otherwise re-sort the pager under the user's thumb.
- * refresh() takes a fresh snapshot + recomputes tag weights — called each time the Feed is opened,
- * so seen-penalties recorded this session reshuffle the *next* open ("no immediate repeats").
- * Live per-card state (star) is patched in place without reordering.
+ * (lastShownAt, SHOWN/DWELL events) and background ranking changes would otherwise re-sort the
+ * pager under the user's thumb.
+ *
+ * Slice 2, item 1: "session" is the whole process run (see the companion object). Entering the Feed
+ * ([onEnter]) re-projects current item data onto the *existing* frozen order without reordering, so
+ * opening an item and coming back lands on the same card. The order is recomputed only on an
+ * explicit refresh — the session's first open, or the "Feed updated" pill ([onRefreshTapped]) —
+ * both funneling through [takeFreshSnapshot]. When the underlying ranking inputs drift from the
+ * snapshot (a new enrichment, a star toggled, a delete), the pill offers that refresh; ordinary
+ * swiping/opening never trips it. Live per-card state (star) is patched in place without reordering.
  */
 class FeedViewModel(
     private val repository: ItemRepository,
@@ -52,6 +59,33 @@ class FeedViewModel(
     private var cachedWeights: Map<String, Double> = emptyMap()
     private var focusedItemId: String? = null
     private var focusedAtMs: Long = 0L
+
+    // --- Refresh-available pill (Slice 2, item 4) ---
+
+    /** True once the live library has diverged from the frozen snapshot's ranking inputs (a newly
+     *  enriched item, a star toggled, an item trashed). The Feed shows the "Feed updated" pill;
+     *  tapping it ([onRefreshTapped]) re-ranks and clears this. */
+    private val _refreshAvailable = MutableStateFlow(false)
+    val refreshAvailable: StateFlow<Boolean> = _refreshAvailable
+
+    /** One-shot counter the Feed watches to fast-scroll back to the first card after a pill-driven
+     *  refresh (item 4). Incremented only on an explicit refresh, never on a plain re-entry. */
+    private val _scrollToTopTrigger = MutableStateFlow(0)
+    val scrollToTopTrigger: StateFlow<Int> = _scrollToTopTrigger
+
+    init {
+        // Watch the live library so a background change while the Feed is open — enrichment
+        // finishing, a star toggled from Detail, a delete — flips the pill without re-ranking. Cheap
+        // set comparison against the baseline captured at the last refresh; skipped until the first
+        // snapshot exists. viewModelScope-bound, so it stops when this ViewModel is destroyed (a
+        // change that lands while it's dead is caught instead by reprojectFrozen on the next entry).
+        viewModelScope.launch {
+            repository.observeAllItemsWithTags().collect { live ->
+                val baseline = sessionFingerprint ?: return@collect
+                if (fingerprintOf(live) != baseline) _refreshAvailable.value = true
+            }
+        }
+    }
 
     // --- Swipe hint (first-run + idle re-trigger) ---
 
@@ -76,6 +110,34 @@ class FeedViewModel(
         // process death, which is the only thing allowed to reset it (per the spec).
         private var sessionPrefsLoaded = false
         private var isFirstSessionEver = false
+
+        // Slice 2, item 1 — stable feed session ordering. The frozen feed order for THIS process
+        // run lives here (not in the ViewModel instance) so it survives ViewModel recreation across
+        // Feed<->Library tab switches and Feed->Detail->back, and resets only on process death.
+        // "Session = process lifetime, reset only on cold start" — same precedent as the swipe-hint
+        // flags above. Re-entering the Feed re-projects current item data onto this exact order
+        // (never re-ranks); only an explicit refresh (first open, or the pill) recomputes it.
+        private var sessionOrderIds: List<String>? = null
+
+        // The item the pager last settled on this session. Restored as the Feed's initial page when
+        // it's re-entered after a Detail round-trip (item 1: come back to the card you opened, not
+        // the top). Process-scoped like the order it indexes into, so it survives the round-trip
+        // even if the ViewModel is recreated.
+        private var sessionLastSettledItemId: String? = null
+
+        // The ranking-input baseline captured at the last full refresh: the set of "id:starred" over
+        // ENRICHED items. Staleness (the pill) = the live DB fingerprint diverging from this. It
+        // deliberately excludes view-tracking fields (lastShownAt/lastViewedAt/engagement) so
+        // ordinary swiping and opening never trip the pill — only content/preference changes do
+        // (item 4: "anything that changes the ranking should trigger it").
+        private var sessionFingerprint: Set<String>? = null
+
+        /** The ranking-input fingerprint of a library snapshot (see [sessionFingerprint]). */
+        private fun fingerprintOf(items: List<ItemWithTags>): Set<String> =
+            items.asSequence()
+                .filter { it.item.status == ItemStatus.ENRICHED }
+                .map { "${it.item.id}:${it.item.isStarred}" }
+                .toSet()
     }
 
     /** Feed became the visible surface: on the true first-ever visit this process boots the
@@ -143,35 +205,72 @@ class FeedViewModel(
         sessionEventCounts[eventType] = (sessionEventCounts[eventType] ?: 0) + 1
     }
 
-    fun refresh() {
+    /**
+     * The Feed entered composition — first open this process, a tab return, or back from Detail.
+     * On the session's first entry there's no frozen order yet, so it takes a fresh ranked snapshot.
+     * On every later entry it re-projects the current item data onto the *existing* frozen order
+     * (so star marks and edits made elsewhere show) but never reorders — that's item 1's whole
+     * point: opening an item and coming back must land on the same card, not a reshuffled feed.
+     */
+    fun onEnter() {
         logSessionSummary() // in case onLeaveFeed was skipped (e.g. process death) since the last open
         viewModelScope.launch {
-            val snapshot = repository.getItemsWithTagsSnapshot()
-            cachedWeights = repository.computeUserTagWeights()
-            // Ranking is pure CPU work (sort + scoring pass) — off the main dispatcher so a large
-            // library doesn't jank the UI thread on every Feed open. Same result either way.
-            val items = withContext(Dispatchers.Default) {
-                val byId = snapshot.associateBy { it.item.id }
-                val ordered = buildFeed(snapshot.map { it.toCandidate() }, cachedWeights, System.currentTimeMillis())
-                ordered.mapNotNull { byId[it.id] }
-            }
-            // The onboarding demo item's one-time landing animation: eligible exactly once ever,
-            // the first refresh() that sees it un-animated. Persisted immediately (not deferred to
-            // FeedCard playing it) so a re-entry into Feed before this session ends, or a process
-            // death mid-animation, can never re-trigger it -- only this in-memory state's copy of
-            // demoLandingItemId (cleared by onLandingAnimationPlayed) controls whether it plays
-            // again later *within* this same session.
-            val demoLandingItemId = items.firstOrNull { it.item.isDemo && !it.item.demoLandingAnimationShown }?.item?.id
-            if (demoLandingItemId != null) {
-                repository.markDemoLandingAnimationShown(demoLandingItemId)
-            }
-            _state.value = if (items.isEmpty()) {
-                FeedUiState.Empty
-            } else {
-                FeedUiState.Content(items, demoLandingItemId)
-            }
-            Timber.i("feed opened: candidates=%d", items.size)
+            val frozen = sessionOrderIds
+            if (frozen == null) takeFreshSnapshot(scrollToTop = false) else reprojectFrozen(frozen)
         }
+    }
+
+    /**
+     * The "Feed updated" pill was tapped (item 4) — the one in-session path that changes the frozen
+     * order. Re-ranks from scratch (starred items regroup to the top, newly-enriched items join),
+     * clears the pill, and signals the Feed to fast-scroll back to the first card.
+     */
+    fun onRefreshTapped() {
+        viewModelScope.launch { takeFreshSnapshot(scrollToTop = true) }
+    }
+
+    /** Recompute the ranked order from the live library and make it the new frozen session order. */
+    private suspend fun takeFreshSnapshot(scrollToTop: Boolean) {
+        val snapshot = repository.getItemsWithTagsSnapshot()
+        cachedWeights = repository.computeUserTagWeights()
+        // Ranking is pure CPU work (sort + scoring pass) — off the main dispatcher so a large
+        // library doesn't jank the UI thread. Same result either way.
+        val items = withContext(Dispatchers.Default) {
+            val byId = snapshot.associateBy { it.item.id }
+            val ordered = buildFeed(snapshot.map { it.toCandidate() }, cachedWeights, System.currentTimeMillis())
+            ordered.mapNotNull { byId[it.id] }
+        }
+        sessionOrderIds = items.map { it.item.id }
+        sessionFingerprint = fingerprintOf(snapshot)
+        _refreshAvailable.value = false
+
+        // The onboarding demo item's one-time landing animation: eligible exactly once ever, the
+        // first fresh snapshot that sees it un-animated (never on a reprojection). Persisted
+        // immediately (not deferred to FeedCard playing it) so a re-entry into Feed before this
+        // session ends, or a process death mid-animation, can never re-trigger it -- only the
+        // in-memory demoLandingItemId (cleared by onLandingAnimationPlayed) gates a same-session replay.
+        val demoLandingItemId = items.firstOrNull { it.item.isDemo && !it.item.demoLandingAnimationShown }?.item?.id
+        if (demoLandingItemId != null) {
+            repository.markDemoLandingAnimationShown(demoLandingItemId)
+        }
+        _state.value = if (items.isEmpty()) FeedUiState.Empty else FeedUiState.Content(items, demoLandingItemId)
+        if (scrollToTop) _scrollToTopTrigger.value += 1
+        Timber.i("feed snapshot: candidates=%d", items.size)
+    }
+
+    /**
+     * Re-render the frozen [orderIds] with current item data (star flags, edits) without reordering
+     * or admitting newly-enriched items — those wait for the next explicit refresh (item 1). Also
+     * catches a ranking-input change that landed while this ViewModel was dead (so the collector in
+     * [init] never saw it), so the pill still shows on return.
+     */
+    private suspend fun reprojectFrozen(orderIds: List<String>) {
+        val snapshot = repository.getItemsWithTagsSnapshot()
+        val byId = snapshot.associateBy { it.item.id }
+        val items = orderIds.mapNotNull { byId[it] } // preserve order; drop anything trashed/removed
+        _state.value = if (items.isEmpty()) FeedUiState.Empty else FeedUiState.Content(items)
+        sessionFingerprint?.let { if (fingerprintOf(snapshot) != it) _refreshAvailable.value = true }
+        Timber.i("feed reprojected: candidates=%d", items.size)
     }
 
     /** FeedCard finished playing the demo item's landing animation -- clear it so scrolling away
@@ -189,9 +288,15 @@ class FeedViewModel(
         sessionEventCounts.clear()
     }
 
+    /** The card index the Feed should open on when re-entered (item 1). -1 if none/unknown, which
+     *  [FeedScreen] coerces to the first page. */
+    fun resumePageIn(items: List<ItemWithTags>): Int =
+        sessionLastSettledItemId?.let { id -> items.indexOfFirst { it.item.id == id } } ?: -1
+
     /** Pager settled on a new card: close out the previous card's dwell, then mark the new one shown. */
     fun onPageSettled(itemId: String) {
         onInteraction()
+        sessionLastSettledItemId = itemId // remembered so a Detail round-trip returns to this card
         if (focusedItemId == itemId) return
         val now = System.currentTimeMillis()
         val previous = focusedItemId
@@ -231,6 +336,9 @@ class FeedViewModel(
     }
 
     fun onDismiss(itemId: String) {
+        // Drop it from the frozen order too, so a Detail round-trip / tab return doesn't re-project
+        // the dismissed card back in (reprojectFrozen rebuilds strictly from sessionOrderIds).
+        sessionOrderIds = sessionOrderIds?.filterNot { it == itemId }
         val current = _state.value
         if (current is FeedUiState.Content) {
             val remaining = current.items.filterNot { it.item.id == itemId }

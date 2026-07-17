@@ -92,6 +92,7 @@ fun LibraryScreen(
     val availableTags by viewModel.availableTags.collectAsState()
     val selectedTagIds by viewModel.selectedTagIds.collectAsState()
     val selectedType by viewModel.selectedType.collectAsState()
+    val starredOnly by viewModel.starredOnly.collectAsState()
     val sortMode by viewModel.sortMode.collectAsState()
     val hasActiveFilter by viewModel.hasActiveFilter.collectAsState()
 
@@ -137,10 +138,16 @@ fun LibraryScreen(
 
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                TypeFilterRow(selectedType = selectedType, onSelectType = viewModel::setTypeFilter)
+                TypeFilterRow(
+                    selectedType = selectedType,
+                    starredOnly = starredOnly,
+                    onSelectType = viewModel::setTypeFilter,
+                    onSelectStarred = { viewModel.setStarredOnly(true) },
+                    modifier = Modifier.weight(1f)
+                )
                 SortMenu(sortMode = sortMode, onSelectSort = viewModel::setSortMode)
             }
             Box(Modifier.fillMaxWidth().height(1.dp).background(InkLine))
@@ -229,15 +236,27 @@ private val TYPE_FILTER_OPTIONS = listOf(
 )
 
 @Composable
-private fun TypeFilterRow(selectedType: String?, onSelectType: (String?) -> Unit) {
-    Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+private fun TypeFilterRow(
+    selectedType: String?,
+    starredOnly: Boolean,
+    onSelectType: (String?) -> Unit,
+    onSelectStarred: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    // Scrollable so the extra "Starred" chip never crowds the sort menu on a narrow screen.
+    Row(
+        modifier = modifier.horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(7.dp)
+    ) {
         TYPE_FILTER_OPTIONS.forEach { option ->
             MonoChip(
                 label = option.label,
-                selected = selectedType == option.type,
+                // Type chips deselect while Starred is active (they're one mutually-exclusive row).
+                selected = !starredOnly && selectedType == option.type,
                 onClick = { onSelectType(option.type) }
             )
         }
+        MonoChip(label = "Starred", selected = starredOnly, onClick = onSelectStarred)
     }
 }
 

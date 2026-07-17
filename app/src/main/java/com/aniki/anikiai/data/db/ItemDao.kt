@@ -82,7 +82,7 @@ interface ItemDao {
     suspend fun getDemoItem(): ItemEntity?
 
     /** Marks the Feed's one-time demo-item landing animation played, so it never replays --
-     *  called once, from FeedViewModel.refresh(), the first time it decides to animate the item. */
+     *  called once, from FeedViewModel.takeFreshSnapshot(), the first time it decides to animate the item. */
     @Query("UPDATE items SET demoLandingAnimationShown = 1 WHERE id = :id")
     suspend fun markDemoLandingAnimationShown(id: String)
 

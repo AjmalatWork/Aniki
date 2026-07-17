@@ -6,8 +6,11 @@ import android.text.format.DateUtils
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -25,6 +28,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -40,6 +44,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -50,18 +55,25 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -77,11 +89,14 @@ import com.aniki.anikiai.ui.theme.ItemThumbnail
 import com.aniki.anikiai.ui.theme.OnDarkBody
 import com.aniki.anikiai.ui.theme.Paper
 import com.aniki.anikiai.ui.theme.PaperLine
+import com.aniki.anikiai.ui.theme.Kon
 import com.aniki.anikiai.ui.theme.Seal
 import com.aniki.anikiai.ui.theme.SealDark
 import com.aniki.anikiai.ui.theme.SealMark
 import com.aniki.anikiai.ui.theme.Spacing
+import com.aniki.anikiai.ui.theme.StarMark
 import com.aniki.anikiai.ui.theme.WeightedCard
+import com.aniki.anikiai.ui.theme.weightedShadow
 
 /**
  * The Feed is the one immersive dark-ground screen in the app (mockup plates 03/04) — it wraps
@@ -111,11 +126,15 @@ fun FeedScreen(
     val state by viewModel.state.collectAsState()
     val showHint by viewModel.showHint.collectAsState()
     val hintTrigger by viewModel.hintTrigger.collectAsState()
+    val refreshAvailable by viewModel.refreshAvailable.collectAsState()
+    val scrollToTop by viewModel.scrollToTopTrigger.collectAsState()
     val context = LocalContext.current
 
-    // Re-snapshot on every entry (seen-penalties from last visit reshuffle the order); bank the
+    // Slice 2, item 1: entering the Feed reuses the frozen per-session order (re-projecting current
+    // data onto it) rather than re-ranking, so a Detail round-trip lands on the same card. The order
+    // only recomputes on an explicit refresh (first open, or the "Feed updated" pill). Bank the
     // final dwell when the Feed leaves composition.
-    LaunchedEffect(Unit) { viewModel.refresh() }
+    LaunchedEffect(Unit) { viewModel.onEnter() }
     DisposableEffect(Unit) {
         viewModel.onFeedVisible()
         onDispose {
@@ -147,39 +166,75 @@ fun FeedScreen(
 
             is FeedUiState.Content -> {
                 val items = s.items
-                val pagerState = rememberPagerState(pageCount = { items.size })
+                // Restore the card the user last settled on when re-entering the Feed after a Detail
+                // round-trip (item 1). initialPage is only read on first composition, so a plain
+                // return lands here; an explicit refresh separately scrolls to 0 (below).
+                val initialPage = remember(items) { viewModel.resumePageIn(items).coerceAtLeast(0) }
+                val pagerState = rememberPagerState(initialPage = initialPage, pageCount = { items.size })
+
+                // Brief blur while a pill-driven refresh reshuffles the stack and jumps to the top,
+                // so the reorder isn't visible mid-flight — it "reveals" the new order once settled
+                // (item 4). Blur is a no-op below API 31 (feedBlur); the scroll still happens.
+                var refreshing by remember { mutableStateOf(false) }
+                val blurRadius by animateDpAsState(if (refreshing) 16.dp else 0.dp, tween(240), label = "feedBlur")
 
                 LaunchedEffect(pagerState.settledPage, items) {
                     items.getOrNull(pagerState.settledPage)?.let { viewModel.onPageSettled(it.item.id) }
                 }
 
-                VerticalPager(state = pagerState, modifier = modifier.fillMaxSize().background(Ink)) { page ->
-                    val itemWithTags = items[page]
-                    // No "swipe up for next" text/animation on the last item -- there's nothing
-                    // further to swipe to (this also covers the single-item Feed, where the only
-                    // page is always the last one).
-                    val isLastPage = page == items.lastIndex
-                    FeedCard(
-                        itemWithTags = itemWithTags,
-                        contentPadding = contentPadding,
-                        showHint = showHint && page == pagerState.settledPage && !isLastPage,
-                        hintTrigger = hintTrigger,
-                        playLandingAnimation = itemWithTags.item.id == s.demoLandingItemId,
-                        onLandingAnimationPlayed = viewModel::onLandingAnimationPlayed,
-                        onInteraction = viewModel::onInteraction,
-                        onOpen = {
-                            viewModel.onOpen(itemWithTags.item.id)
-                            val item = itemWithTags.item
-                            if (item.type == ItemType.NOTE || item.sourceUrl == null) {
-                                onOpenDetail(item.id)
-                            } else {
-                                runCatching {
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(item.sourceUrl)))
+                // Pill tapped -> onRefreshTapped() rebuilt `items` and bumped scrollToTop: blur,
+                // fast-scroll to the first card of the refreshed order, then clear the blur.
+                LaunchedEffect(scrollToTop) {
+                    if (scrollToTop == 0) return@LaunchedEffect
+                    refreshing = true
+                    delay(80) // let the re-ranked stack compose under the blur before it moves
+                    pagerState.animateScrollToPage(0)
+                    delay(120)
+                    refreshing = false
+                }
+
+                Box(modifier.fillMaxSize().background(Ink)) {
+                    VerticalPager(
+                        state = pagerState,
+                        modifier = Modifier.fillMaxSize().feedBlur(blurRadius)
+                    ) { page ->
+                        val itemWithTags = items[page]
+                        // No "swipe up for next" text/animation on the last item -- there's nothing
+                        // further to swipe to (this also covers the single-item Feed, where the only
+                        // page is always the last one).
+                        val isLastPage = page == items.lastIndex
+                        FeedCard(
+                            itemWithTags = itemWithTags,
+                            contentPadding = contentPadding,
+                            showHint = showHint && page == pagerState.settledPage && !isLastPage,
+                            hintTrigger = hintTrigger,
+                            playLandingAnimation = itemWithTags.item.id == s.demoLandingItemId,
+                            onLandingAnimationPlayed = viewModel::onLandingAnimationPlayed,
+                            onInteraction = viewModel::onInteraction,
+                            onOpen = {
+                                viewModel.onOpen(itemWithTags.item.id)
+                                val item = itemWithTags.item
+                                if (item.type == ItemType.NOTE || item.sourceUrl == null) {
+                                    onOpenDetail(item.id)
+                                } else {
+                                    runCatching {
+                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(item.sourceUrl)))
+                                    }
                                 }
-                            }
-                        },
-                        onToggleStar = { viewModel.onToggleStar(itemWithTags.item.id, !itemWithTags.item.isStarred) },
-                        onDismiss = { viewModel.onDismiss(itemWithTags.item.id) }
+                            },
+                            onToggleStar = { viewModel.onToggleStar(itemWithTags.item.id, !itemWithTags.item.isStarred) },
+                            onDismiss = { viewModel.onDismiss(itemWithTags.item.id) }
+                        )
+                    }
+
+                    // The refresh-available pill floats over the whole stack, fixed at the top —
+                    // not attached to any card (item 4).
+                    RefreshPill(
+                        visible = refreshAvailable,
+                        onClick = viewModel::onRefreshTapped,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = contentPadding.calculateTopPadding() + 10.dp)
                     )
                 }
             }
@@ -301,6 +356,12 @@ private fun FeedCard(
                     )
             )
         }
+        // The whole video hero opens the source on tap (parity with the article hero, which is
+        // fully tappable) — not just the small "Open" rail action. Low in the z-order, so the rail
+        // actions / star mark layered above still take their own taps first.
+        if (isVideo) {
+            Box(Modifier.fillMaxSize().clickable(onClick = onOpen))
+        }
 
         val topPad = contentPadding.calculateTopPadding() + 10.dp
 
@@ -319,10 +380,12 @@ private fun FeedCard(
         if (isNote) {
             NoteCard(
                 item = item,
+                starred = item.isStarred,
+                onToggleStar = onToggleStar,
+                onOpen = onOpen,
                 modifier = Modifier
                     .align(Alignment.Center)
                     .padding(horizontal = 18.dp)
-                    .clickable(onClick = onOpen)
             )
             if (itemWithTags.tags.isNotEmpty()) {
                 Row(
@@ -411,6 +474,21 @@ private fun FeedCard(
             RailAction(icon = Icons.Default.Close, label = "Dismiss", onClick = onDismiss)
         }
 
+        // Persistent star mark (item 3), top-left, mirroring the top-right 兄 seal. Notes carry it
+        // on their own parchment card (see NoteCard); article/video heroes are full-bleed so it
+        // sits at the screen's top-left, level with where the article seal stamps. Tapping it
+        // unstars (with the ink-fade dissolve). Stamp-down animation plays on the star transition.
+        if (!isNote) {
+            StarStamp(
+                starred = item.isStarred,
+                onDark = true,
+                onClick = onToggleStar,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(top = topPad + 48.dp, start = 20.dp)
+            )
+        }
+
         // Swipe hint: an affordance nudge, not permanent chrome -- see FeedViewModel for when
         // it's eligible (first-ever Feed open, plus idle re-trigger during that same session only).
         AnimatedVisibility(
@@ -471,50 +549,242 @@ private fun Modifier.pillBorder(color: Color) = this.border(1.dp, color, Rounded
 private fun Modifier.circleBorder(color: Color) = this.border(1.dp, color, CircleShape)
 
 @Composable
-private fun NoteCard(item: com.aniki.anikiai.data.db.ItemEntity, modifier: Modifier = Modifier) {
-    // Prefer the AI summary's pull-quote once enrichment has run (same extraction as articles,
-    // for a consistent typographic voice); a not-yet-enriched note falls back to quoting its own
-    // body text verbatim, same as before.
-    val quote = remember(item.summary, item.bodyText, item.title) {
-        if (!item.summary.isNullOrBlank()) {
-            extractPullQuote(item.summary, item.title)
-        } else {
-            item.bodyText.orEmpty().ifBlank { item.title }
-        }
+private fun NoteCard(
+    item: com.aniki.anikiai.data.db.ItemEntity,
+    starred: Boolean,
+    onToggleStar: () -> Unit,
+    onOpen: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    // Slice 2, item 2: the Feed note card shows the note's REAL content, not the AI summary/
+    // pull-quote (that voice is for links). Fall back to the title only if the body is blank.
+    val body = remember(item.bodyText, item.title) {
+        item.bodyText?.takeIf { it.isNotBlank() } ?: item.title
     }
+    var truncated by remember(body) { mutableStateOf(false) }
 
     WeightedCard(
-        modifier = modifier.widthIn(max = 340.dp),
+        modifier = modifier.widthIn(max = 340.dp).clickable(onClick = onOpen),
         shape = RoundedCornerShape(18.dp),
         containerColor = Paper,
         ambient = 20.dp,
         contact = 6.dp
     ) {
-        Box(modifier = Modifier.padding(22.dp)) {
+        Box(modifier = Modifier.padding(20.dp)) {
             Column {
+                // Reserve a top band so the heading text always sits below the corner marks — the
+                // star (top-left) and seal (top-right) are absolute overlays, so toggling the star
+                // never shifts the category heading (item 3).
+                Spacer(Modifier.height(30.dp))
                 Text(
                     text = (item.category?.takeIf { it.isNotBlank() } ?: "Note").uppercase(),
                     style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.sp),
                     color = Seal
                 )
                 Spacer(Modifier.height(14.dp))
-                Text(
-                    text = "“$quote”",
-                    style = MaterialTheme.typography.titleLarge.copy(fontSize = 19.sp, lineHeight = 27.sp),
-                    color = com.aniki.anikiai.ui.theme.Kon,
-                    modifier = Modifier.padding(end = 34.dp)
-                )
-                // Reserves room below the quote so the seal (absolute bottom-end) never overlaps text.
-                Spacer(Modifier.height(38.dp))
+
+                // Real content, truncated to fit with a bottom fade + "tap to read full note" when
+                // it overflows; short notes render whole. Generic fade/affordance shell (see
+                // FadingTruncatedContent) so a future checklist note type reuses it with a list slot.
+                FadingTruncatedContent(
+                    truncated = truncated,
+                    fadeColor = Paper,
+                    affordance = "tap to read full note"
+                ) {
+                    Text(
+                        text = body,
+                        style = MaterialTheme.typography.titleLarge.copy(fontSize = 19.sp, lineHeight = 28.sp),
+                        color = Kon,
+                        maxLines = NOTE_CARD_MAX_LINES,
+                        overflow = TextOverflow.Clip,
+                        onTextLayout = { truncated = it.hasVisualOverflow }
+                    )
+                }
             }
-            SealMark(
-                size = 36.dp,
+
+            // Corner marks: star top-left (when starred), 兄 seal top-right — mirrored, the same
+            // placement idiom as the link/video hero (item 3), positioned absolutely so neither
+            // reflows the content.
+            StarStamp(
+                starred = starred,
+                onDark = false,
+                onClick = onToggleStar,
+                size = 22.dp,
+                modifier = Modifier.align(Alignment.TopStart)
+            )
+            SealMark(size = 26.dp, modifier = Modifier.align(Alignment.TopEnd))
+        }
+    }
+}
+
+/** Max note-body lines shown on a Feed card before it truncates with a fade (item 2). */
+private const val NOTE_CARD_MAX_LINES = 9
+
+/**
+ * The reusable truncation shell for Feed note content (item 2): renders [content], and when the
+ * caller reports it overflowed ([truncated]), overlays a bottom fade to [fadeColor] and appends a
+ * tap [affordance]. Deliberately content-agnostic — the caller owns overflow detection and the
+ * content slot, so a future checklist note type can plug a list of items in where prose sits today.
+ */
+@Composable
+private fun FadingTruncatedContent(
+    truncated: Boolean,
+    fadeColor: Color,
+    affordance: String,
+    content: @Composable () -> Unit
+) {
+    Column {
+        Box {
+            content()
+            if (truncated) {
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .background(
+                            Brush.verticalGradient(0.55f to Color.Transparent, 1f to fadeColor)
+                        )
+                )
+            }
+        }
+        if (truncated) {
+            Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = affordance,
+                    style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.5.sp),
+                    color = Seal
+                )
+                Spacer(Modifier.width(5.dp))
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowForward,
+                    contentDescription = null,
+                    tint = Seal,
+                    modifier = Modifier.size(13.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The star stamp (item 3): the persistent oxblood [StarMark] plus its stamp-down / ink-fade
+ * animation. On the transition to starred it appears oversized, squashes, then settles, with an
+ * oxblood ink-bloom radiating out; on the transition away it dissolves (fade + slight upward
+ * drift). A card that first composes already-starred just shows the resting mark (no replay). The
+ * mark is tappable to unstar. The whole thing is visual — [onClick] toggles the data, the ordering
+ * never moves (item 1/3).
+ */
+@Composable
+private fun StarStamp(
+    starred: Boolean,
+    onDark: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    size: Dp = 22.dp
+) {
+    val presence = remember { Animatable(if (starred) 1f else 0f) }
+    val scale = remember { Animatable(1f) }
+    val ripple = remember { Animatable(0f) }
+    var initialized by remember { mutableStateOf(false) }
+
+    LaunchedEffect(starred) {
+        if (!initialized) {
+            initialized = true
+            presence.snapTo(if (starred) 1f else 0f)
+            return@LaunchedEffect
+        }
+        if (starred) {
+            presence.snapTo(1f)
+            ripple.snapTo(0f)
+            scale.snapTo(1.5f)
+            launch { ripple.animateTo(1f, tween(520)) }
+            scale.animateTo(0.86f, animationSpec = tween(110))
+            scale.animateTo(
+                1f,
+                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium)
+            )
+        } else {
+            scale.snapTo(1f)
+            presence.animateTo(0f, animationSpec = tween(360))
+        }
+    }
+
+    // Fully dissolved and not starred: nothing to draw (and no dead click target).
+    if (!starred && presence.value <= 0.001f) return
+
+    Box(
+        modifier = modifier
+            .size(size)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        val markColor = if (onDark) SealDark else Seal
+        if (ripple.value > 0f && ripple.value < 1f) {
+            Box(
                 modifier = Modifier
-                    .align(Alignment.BottomEnd)
+                    .size(size)
+                    .graphicsLayer {
+                        val s = 1f + ripple.value * 2.4f
+                        scaleX = s
+                        scaleY = s
+                        alpha = (1f - ripple.value) * 0.45f
+                    }
+                    .clip(CircleShape)
+                    .background(markColor)
+            )
+        }
+        Box(
+            modifier = Modifier.graphicsLayer {
+                alpha = presence.value
+                scaleX = scale.value
+                scaleY = scale.value
+                translationY = -(1f - presence.value) * 10.dp.toPx()
+            }
+        ) {
+            StarMark(size = size, onDark = onDark)
+        }
+    }
+}
+
+/** The "Feed updated" pill (item 4): oxblood, fixed at the top of the Feed, springs down into view
+ *  when the session snapshot goes stale. Tapping it re-ranks and scrolls to the top. */
+@Composable
+private fun RefreshPill(visible: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    AnimatedVisibility(
+        visible = visible,
+        modifier = modifier,
+        enter = slideInVertically(
+            animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)
+        ) { full -> -full * 2 } + fadeIn(animationSpec = tween(200)),
+        exit = slideOutVertically { full -> -full } + fadeOut(animationSpec = tween(160))
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .weightedShadow(RoundedCornerShape(20.dp), ambient = 12.dp, contact = 3.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(Seal)
+                .clickable(onClick = onClick)
+                .padding(horizontal = 16.dp, vertical = 9.dp)
+        ) {
+            Icon(Icons.Default.Refresh, contentDescription = null, tint = Paper, modifier = Modifier.size(15.dp))
+            Spacer(Modifier.width(7.dp))
+            Text(
+                text = "Feed updated",
+                style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp),
+                color = Paper
             )
         }
     }
 }
+
+/** Blur only where the platform supports it (API 31+); a no-op below, so the refresh still scrolls. */
+private fun Modifier.feedBlur(radius: Dp): Modifier =
+    if (radius > 0.dp && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+        this.blur(radius)
+    } else {
+        this
+    }
 
 /**
  * Article typographic hero (brief #3): no image/OG hero here, deliberately -- the pull-quote

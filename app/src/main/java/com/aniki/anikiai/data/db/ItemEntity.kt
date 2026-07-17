@@ -66,7 +66,7 @@ data class ItemEntity(
     val isDemo: Boolean = false,
     // Local-only (not part of SyncItemDto/synced) -- whether the Feed's one-time "you just shared
     // this" landing animation has already played for this item. Only ever meaningful when isDemo
-    // is true; see FeedViewModel.refresh(), which sets this the moment it decides to animate the
+    // is true; see FeedViewModel.takeFreshSnapshot(), which sets this the moment it decides to animate the
     // item so a later refresh() (re-entering Feed) or a fresh app launch never replays it.
     val demoLandingAnimationShown: Boolean = false
 )
