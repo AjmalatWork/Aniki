@@ -90,62 +90,174 @@ would be jarring.
 
 ## 5. Current state / what's done
 
-MVP (6 slices) is complete, functionally and visually. `hardening/non-functional-batch` was
-fast-forward merged into `main` (2026-07-16) and the branch was deleted — everything below is on
-`main` now. All of it is verified end-to-end on a physical Pixel 8 Pro against real Postgres and a
-real Gemini key.
+MVP (6 slices) is complete, functionally and visually. Post-MVP: hardening batch, visual polish
+passes, onboarding share-tip, first production deployment, and **Slice 1** of a new post-MVP
+feature track are all done and merged to `main`. Everything below is verified end-to-end on a
+physical Pixel 8 Pro; deployment pieces are verified against the live Render service.
 
-- **Non-functional hardening**: Room indexes, single-flight Gemini cache, error middleware, test
-  coverage additions (backend went from 0 tests to a real suite).
-- **Functional hardening**: Gemini daily-cap now counts retries correctly, Express body limit
-  raised to 2mb, SSRF guard on `/enrich`, per-IP rate limiting, tombstone GC, paginated sync pulls.
-- **4-item polish pass**: Feed swipe hint (first-run + idle re-trigger, first session only, now
-  also suppressed on the last/only Feed item), Library thumbnails (real OG image → on-palette
-  monogram → note glyph, with lazy backfill), Feed article/note typographic hero (pull-quote, no
-  image), Gemini-generated + user-editable note titles (with throttled backfill for existing notes).
-- **Library/Feed polish pass 2**: Library cards dropped the overlaid type-label text for a small
-  below-image icon (globe for articles, reused `PlayArrow` for video, none for notes); the note
-  thumbnail now mirrors the app launcher icon's stamp treatment (`SealStampGradient` badge +
-  light pencil glyph, `ui/theme/Components.kt`); Feed's bottom zone (hint/text/source/tags) now
-  pulls from a shared `Spacing` scale (`ui/theme/Spacing.kt`) and one `BOTTOM_ZONE_INSET` constant.
-- **Onboarding "how sharing works" step**: a new `RootState.SHARE_TIP` (`ui/AppRoot.kt`) fires
-  after sign-in/guest, before MAIN — a two-screen in-app coach-mark
-  (`ui/onboarding/ShareTipScreen.kt`: explain → "your share menu is about to open") primes the
-  user, then fires a real `ACTION_SEND` with hardcoded demo content ("Welcome to Aniki" + fixed
-  body, `share/OnboardingDemoContent.kt`) so Aniki appears as a genuine share-sheet target. Demo
-  content is detected via an invisible zero-width-space marker in `ShareReceiverActivity`, flows
-  through the normal share-receive path, but is flagged `ItemEntity.isDemo` — skips real
-  enrichment/Gemini entirely (saved pre-`ENRICHED`) and is never synced, while staying otherwise
-  visible/deletable in Library/Feed/search like any real item. Every share-sheet outcome resumes
-  straight to the Feed (no third "result" screen); if the demo item was received, Feed plays a
-  one-time Seal-glow landing pulse (`ItemEntity.demoLandingAnimationShown` persists that it never
-  replays). Settings shows a persistent one-line reminder below the account line (no new section).
-  Room is now at schema version 8.
+- **Non-functional + functional hardening**: Room indexes, single-flight Gemini cache, error
+  middleware, backend test suite from scratch; Gemini daily-cap retry counting fix, 2mb Express
+  body limit, SSRF guard on `/enrich`, per-IP rate limiting, tombstone GC, paginated sync pulls.
+- **Visual polish passes**: Feed swipe hint (first-run + idle re-trigger), Library thumbnails
+  (OG image → monogram → note glyph, lazy backfill), Feed article/note typographic hero
+  (pull-quote), Gemini-generated + user-editable note titles, Library/Feed icon and spacing
+  cleanup (`ui/theme/Spacing.kt`).
+- **Onboarding "how sharing works" step**: `RootState.SHARE_TIP` (`ui/AppRoot.kt`) fires a real
+  `ACTION_SEND` with hardcoded demo content so Aniki appears as a genuine share-sheet target
+  (`share/OnboardingDemoContent.kt`, `ItemEntity.isDemo` gates sync/enrichment but not
+  visibility). Room schema version 8.
+- **Production deployment**: backend live on Render (`aniki-server`, free tier — see §6 for the
+  cold-start tradeoff), all secrets from env vars, Postgres over SSL (`DATABASE_SSL`/
+  `pool.ts`/`migrate.ts`). Client `BuildConfig.BASE_URL` switches per build type
+  (`app/build.gradle.kts`) — debug hits local/LAN, release hits the deployed URL. Release signing
+  via git-ignored `keystore.properties` (template: `keystore.properties.example`). Tester
+  distribution via `scripts/distribute-release.ps1` → Firebase App Distribution (`aniki-testers`
+  group); install flow documented for non-technical testers in `tester-install-guide.md`. Full
+  writeups: `docs/specification.md` (product) and `docs/technical-document.md` (implementation).
+- **Slice 1 — note editing, universal direct-edit titles, Trash** (commit `3499627`, plus this
+  session's fixes on top of it — see git log for the exact sequence):
+  - Notes open **directly editable** (title + body, no pencil-tap gate); debounced autosave
+    (`ItemDetailViewModel.updateTitleDraft`/`updateBodyDraft`, 600ms/900ms) + flush-on-dispose so
+    a screen-leave never loses an in-flight edit. Editing the body resets status to `PENDING` and
+    re-enqueues `EnrichmentWorker` (same path as creation) so tags/title stay current — but a
+    title-only edit does **not** re-enrich (tags/title-gen are keyed off body content, not
+    title — see `ItemRepository.updateNoteBody`'s doc).
+  - This direct-edit pattern was then extended to **article/video titles too** (same edit-lock:
+    `titleEditedByUser`/`title_locked`), so all three item types share one `TitleField`
+    composable in `ItemDetailScreen.kt`. Summaries are **not** editable for any type (read-only
+    `SummaryBlock`, no pencil) — and are hidden entirely on notes (redundant next to the user's
+    own text; still generated as a free byproduct of the same enrichment call for future
+    search/embeddings use, just not rendered).
+  - Fixed a real bug along the way: leaving the detail screen mid-edit (via the back button, the
+    system back gesture, or the hardware back key) left a blinking cursor visibly lingering on
+    top of the destination screen for ~1s. Fix: `BackHandler` + explicit
+    `LocalFocusManager.clearFocus(force=true)` + `LocalSoftwareKeyboardController.hide()`,
+    synchronous with the nav call, routed through one `dismissEditingAndBack` lambda used by both
+    the back button and the system back handler. Note: Android's own "first back press dismisses
+    the IME, second press navigates" convention for the hardware/gesture back key is untouched —
+    that's expected OS behavior, not something to fight; the fix targets the *lingering artifact*,
+    not that two-step convention.
+  - **Trash**: soft-delete (`ItemEntity.deletedAt`) already existed as the sync tombstone
+    mechanism and already excluded trashed items from Library/Feed/search — Trash mostly just
+    exposes it. New: `ItemDao`/`ItemRepository` queries for trashed items, restore, hard-delete,
+    and `purgeExpiredTrash(retentionMs)`; `work/TrashPurger.kt` piggybacks on successful sync
+    (same pattern as `ThumbnailBackfiller`/`NoteTitleBackfiller`) to hard-delete anything trashed
+    >30 days ago, **only if already synced** (`dirty=false`) so an un-pushed tombstone is never
+    silently dropped. `ui/trash/TrashScreen.kt` (reachable from Settings → "Trash"): restore,
+    per-item delete-forever, bulk empty-trash, both destructive actions behind a confirm dialog
+    that shows an extra offline warning (`util/NetworkStatus.kt`'s `isOnline()`) when the device
+    is offline at the moment of the tap — manual permanent delete hard-deletes immediately
+    regardless of sync state, so if offline the tombstone may never reach the server (known,
+    accepted, documented edge case — see `ItemRepository.permanentlyDeleteItem`'s doc).
+  - Renamed "Articles" → "Links" everywhere in the UI (Library filter chip, share-sheet
+    detected-type pill, onboarding copy) — **display string only**, `ItemType.WEB_ARTICLE` and
+    the Postgres/sync schema are unchanged. Globe icon kept (arguably fits "Links" better than it
+    fit "Articles").
 
 ## 6. Known open items / pending decisions
 
-- **Not deployed anywhere** — backend/Postgres are local-dev-only; deploy target still TBD
-  (Render suggested as a free-tier option, not decided).
+- **Render free tier cold-starts**: the deployed backend spins down after ~15 min idle; first
+  request after that takes 30-60s+. Acceptable for now during early tester feedback; revisit
+  (paid tier, or a keep-alive ping) if it becomes a real complaint.
 - **Backend has no linting and no CI** — `node:test` suite exists and passes, but nothing runs it
-  automatically.
+  automatically. Migrations against the deployed DB are run manually (`npm run migrate`) since
+  Render's Pre-Deploy Command is a paid-tier feature.
 - **Backend in-memory state won't survive horizontal scaling** — content cache, rate limiter, and
   metrics are all per-process. Fine for one instance, would need a shared store (Redis/Postgres)
   before running more than one.
-- **Direct Share shortcut (sharing-shortcuts) is not implemented.** The onboarding share-tip step
-  was explicitly written to not depend on it — Aniki just appears in the normal app row of the
-  share sheet rather than the Direct Share strip. Fine as-is; only relevant if that feature is
-  ever built later.
+- **Direct Share shortcut (sharing-shortcuts) is not implemented.** Deliberate scope cut, not a bug.
+- **Manual "delete forever" / "empty trash" offline edge case** (see §5) is mitigated with a
+  warning, not fully solved — a genuine fix would mean blocking the UI on a live sync round-trip,
+  judged not worth trading away the instant-delete feel for.
 
-## 7. Recent context
+## 7. Up next: Slice 2 (Feed content, starring, session-stable ordering) — NOT STARTED
 
-- Just finished and committed the onboarding "how sharing works" step (commit `e7b54ac` on
-  `main`), including a live iteration cycle with the user (screenshots each round) that changed
-  the icons/copy/structure significantly from the original written brief — see git log for the
-  full sequence if you need the "why" behind an earlier discarded approach (e.g. the demo item
-  was originally going to be hidden from Library/Feed entirely; the user asked for it to be fully
-  visible so they can see what happened and delete it manually).
-- Backend dev server + Postgres were both running locally during verification; remember to use
-  `Aniki Dev Toggle.bat` (or `docker ps` + `npm run dev` manually) to bring them back up in a new
-  session before testing anything that touches `/enrich` or `/sync`.
-- `CLAUDE.md` now exists and points here — this file no longer needs to be manually referenced by
-  the user at the start of a session.
+Full spec below, exactly as given by the user — read completely before touching any code, since
+item 1 is foundational to items 3 and 4 and touches core ranking/session state.
+
+**Context**: opening an item from Feed and navigating back can currently land the user on a
+different item than the one they opened, because the feed re-ranks/reorders live mid-session.
+This entire slice must avoid reintroducing that failure mode.
+
+1. **Stable feed session ordering.** Snapshot the Feed's order on load and hold it stable for the
+   whole session, including navigating into detail and back. Background ranking changes (new
+   scores, newly enriched items, etc.) must not visually reshuffle the list mid-swipe — the new
+   order only applies on the next explicit refresh (the item-4 indicator, app reopen, or
+   pull-to-refresh at the top).
+2. **Feed note cards show real content, not the AI summary.** Style consistent with the existing
+   article typographic-hero treatment. Truncate long content with a bottom fade (never make the
+   card internally scrollable — conflicts with vertical swipe-to-advance); add a "tap to read full
+   note" affordance when truncated, opening the detail screen. Untruncated short notes render
+   fully. Tapping any note card (truncated or not) opens detail — no inline editing from the Feed
+   card. Scoped to Feed cards only (Library row / detail screen unaffected). Keep the
+   truncation/expand logic reasonably generic, not hardcoded to prose — a future checklist-style
+   note type will need the same pattern applied to list items instead of paragraphs.
+3. **Starring from the Feed card**, with a stamp-down animation (scale up → squash + oxblood
+   ink-bloom/ripple from the stamp point, background blurs briefly then clears) that is purely
+   visual — must not reorder the live session (per item 1). After settling, a persistent oxblood
+   star mark renders top-left of the card heading (mirroring the existing top-right 兄 seal).
+   Unstarring (from the Feed mark or the existing detail-screen toggle, which is unchanged)
+   dissolves the mark with an ink-fade (fade + slight drift). Starring/unstarring updates
+   underlying data (Library/search/filter) immediately in both directions — only the Feed's
+   *visual position* stays frozen until the next refresh.
+4. **Refresh-available indicator**: oxblood pill, fixed at the top of the screen (not attached to
+   the card stack), appears whenever the session's snapshot has gone stale (starring, unstarring,
+   newly-enriched items, etc.), copy like "Feed updated." Slides down with a spring/overshoot
+   entrance. Tap → background blurs, feed fast-scrolls to position 1, reveals the refreshed order
+   (starred items grouped at the top, sorted by the same relevance scoring, not recency-of-star),
+   blur clears once settled. No persistent star count anywhere — this pill is the only signal, and
+   it's general-purpose (not starring-specific — anything that changes the ranking should trigger it).
+5. **Library "Starred" filter chip**, alongside All/Links/Videos/Notes, showing only starred items.
+
+**Architecture already in place that this builds on** (read before designing new state):
+- `ui/feed/FeedViewModel.kt` **already** takes a frozen-per-session snapshot in `refresh()` —
+  `FeedUiState.Content(items: List<ItemWithTags>, ...)` is a plain immutable list, not a live Room
+  `Flow`. `onToggleStar()` already does an in-place `patchItem()` (map + copy, no reorder,
+  no re-sort) rather than touching ordering — item 3's "don't reorder, just patch the star flag"
+  requirement is *already the existing pattern* for starring; the new work is the animation, the
+  persistent mark, and making the refresh-available pill *detect* that a patch happened.
+  `refresh()` is already the single place a new snapshot is taken (called on Feed-open); item 1's
+  "next explicit refresh" and item 4's pill-tap should both funnel through something adjacent to
+  this same method.
+  `companion object`'s `sessionPrefsLoaded`/`isFirstSessionEver` (for the swipe-hint feature) are
+  already scoped to *process lifetime*, not ViewModel lifecycle — Navigation-Compose can
+  retain/recreate `FeedViewModel` across Feed↔Library tab switches within one process run. Whatever
+  "session" means for item 1's stable ordering should probably follow this same precedent (process
+  lifetime, reset only on process death) unless the user's answer to the open question below says
+  otherwise.
+- `feed/Ranking.kt`'s `buildFeed()` is pure/offline (no Android/DB deps, unit-testable directly):
+  scores every `ENRICHED`-status candidate (recency decay, resurface term, tag affinity, date
+  proximity, star bonus `w.wStar`, seen-penalty), sorts, then a diversity post-pass caps
+  same-type run lengths. Star already contributes to score (`w.wStar * star`) — so "starred items
+  grouped at top" in item 4's refreshed order may fall out mostly for free from existing scoring
+  plus a possible weight bump, rather than needing bespoke grouping logic. Worth checking the
+  actual sort behavior empirically before adding a separate "starred-first" branch.
+- Feed card rendering lives in `ui/feed/FeedScreen.kt` (not yet read this session — read fully
+  before implementing items 2/3/4's card-level visuals). Note-vs-article pull-quote logic already
+  exists there per file comments ("Prefer the AI summary's pull-quote... Mirrors NoteCard's
+  now-shared pull-quote extraction") — relevant prior art for item 2's truncation display, though
+  item 2 explicitly wants raw note content instead of the AI summary/pull-quote, so this is
+  precedent for the *mechanism* (truncation, hero styling) not the *content source*.
+
+**Open question the user asked to flag, not yet answered**: how should "session" be scoped for
+item 1 — does backgrounding the app end a session (next foreground = fresh refresh), or does it
+persist until the user explicitly refreshes (matching the swipe-hint precedent's process-lifetime
+scoping above)? Ask before implementing if the user hasn't clarified by the time this resumes.
+
+## 8. Recent context
+
+- Slice 2 above was scoped in full by the user but **implementation has not started** — the
+  session ended right after reading `FeedViewModel.kt` and `feed/Ranking.kt` (notes captured in
+  §7 above). Next session should read `FeedScreen.kt` in full next, then plan before writing code.
+- Slice 1 (§5) is committed on `main` (commit `3499627`) and was manually verified on-device by
+  the user themselves for the final round of fixes (the assistant's own on-device verification
+  pass was interrupted partway through by the user confirming it already looked correct).
+- The physical Pixel 8 Pro currently has the **debug** build installed (not the tester release
+  build) — debug and release use different signing keys, and testing Slice 1 required uninstalling
+  the release build Firebase App Distribution had pushed. Reinstall the release build (or run
+  `distribute-release.ps1` again) if you need the device back in "what testers see" state.
+- Backend dev server + Postgres were both running locally during this session's verification;
+  bring them back up (`Aniki Dev Toggle.bat`, or `docker compose up -d` + `npm run dev` manually +
+  `adb reverse tcp:4000 tcp:4000`) before testing anything that touches `/enrich` or `/sync` on
+  the emulator/device again.
+- `CLAUDE.md` exists and points here — no need for the user to manually reference this file.
