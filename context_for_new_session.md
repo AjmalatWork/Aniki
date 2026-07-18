@@ -61,7 +61,10 @@ this until this session (see §5's SEC1).
 **Ranking**: deterministic Feed engine (`feed/Ranking.kt`) — recency decay, resurface term, tag
 affinity (from engagement history), date-proximity boost, seen-penalty, then a diversity pass.
 Feed order is a **frozen per-session snapshot**, not a live Room `Flow` — re-ranking mid-swipe
-would be jarring.
+would be jarring. Tag affinity is no longer a full `engagement_events` scan: each event's signal
+(`feed/TagWeights.signalForEvent`) is folded incrementally into a per-item `items.engagementSignal`
+running total at write time, and `ItemRepository.computeUserTagWeights()` sums that column with one
+`GROUP BY` — see §4's engagement-signal-aggregate entry for the full shape.
 
 ## 4. Established conventions and patterns
 
@@ -121,14 +124,20 @@ would be jarring.
   the DELETE itself (`hardDeleteExpiredTrashItem`: `DELETE ... WHERE id=:id AND deletedAt IS NOT NULL
   AND deletedAt < :cutoff AND dirty=0`), so a concurrent restore simply makes it match zero rows.
   Apply this pattern to any future "scan candidates, then destroy them one by one" background job.
-- **Process-lifetime session state**: state that must survive a ViewModel being recreated across
-  Navigation-Compose tab switches, but should reset on cold start only, lives in the ViewModel's
-  `companion object` (plain `private var`s), not in instance fields or `SavedStateHandle`. Pattern
-  established for the Feed's frozen session order/fingerprint/last-settled-item (`FeedViewModel`'s
-  companion) and the swipe-hint first-run flags. Feed/Library ViewModels persist as long as the app
-  process lives anyway (NavHost's `saveState`/`restoreState`), so this companion-object belt is
-  somewhat redundant with the suspenders — harmless, but the *simpler* fix for "must survive tab
-  switches" going forward is likely just an instance field.
+- **Process-lifetime session state lives in an injected class, not companion-object statics.**
+  State that must survive a ViewModel being recreated across Navigation-Compose tab switches, but
+  should reset on cold start only, used to live in `FeedViewModel`'s `companion object` (plain
+  `private var`s) — this worked at runtime (a companion object is exactly as process-scoped as an
+  app-lifetime singleton) but was untestable in isolation and would've silently become a
+  shared-across-instances footgun if two `FeedViewModel`s were ever alive for different purposes
+  (M1 of the maintainability audit). Now: `ui/feed/FeedSessionState.kt` is a plain class holding the
+  frozen session order/fingerprint/last-settled-item and the swipe-hint first-run flags,
+  instantiated once as `AnikiApplication.feedSessionState` (`by lazy`, alongside
+  `repository`/`syncRepository`), and threaded explicitly through
+  `AppRoot → AnikiNavHost → FeedScreen → FeedViewModel`'s constructor — same actual lifetime as the
+  old companion object, but now a real, independently constructable/testable object (see
+  `FeedSessionStateTest.kt`). **Apply this same pattern** (an injected app-singleton class, not a
+  companion object) to any future ViewModel that needs state to survive its own recreation.
 - **`SharingStarted.Eagerly` over `WhileSubscribed(5_000)`** for any StateFlow on a ViewModel that's
   known to persist across tab switches (Library/Feed) — `WhileSubscribed` tears the upstream Flow
   chain down after 5s with no subscriber and pays a real, visible cold-restart cost on the next
@@ -175,7 +184,11 @@ would be jarring.
   explaining *why*, no destructive fallback. Mirror on Postgres with a new
   `server/migrations/00N_*.sql` file (forward-only, picked up automatically by the migration runner).
   Bundle a client migration + its server counterpart in the same work session/commit when they're
-  part of the same feature. Room schema is currently **version 9** — nothing added this session.
+  part of the same feature. Room schema is currently **version 11**: `MIGRATION_9_10` adds
+  `items.engagementSignal` with a one-time SQL backfill from existing `engagement_events` (built via
+  string interpolation from `TagWeightConfig()`'s actual defaults, not hand-copied literals — see
+  `AnikiDatabase.BACKFILL_ENGAGEMENT_SIGNAL_SQL` and `AnikiDatabaseMigrationConstantsTest`, which
+  guards the two can't drift apart); `MIGRATION_10_11` adds a plain index on `items.deletedAt`.
 - **SSRF guard reuse**: any server-side fetch of a URL influenced by external content (article
   page, OG-image candidate) must go through `security/urlGuard.ts`'s `assertSafeUrl` — rejects
   non-http(s) schemes and private/loopback/link-local-resolving hosts.
@@ -185,6 +198,26 @@ would be jarring.
   independently, so one device's state doesn't affect another's. `isDemo` (the onboarding demo item)
   additionally gates sync (never pushed) and enrichment (never real-enriched) but *not*
   Library/Feed/search visibility — it's otherwise a normal, user-deletable item.
+- **Incremental aggregate over a full-table scan, when a value only needs to grow monotonically
+  from append-only events.** `ItemRepository.computeUserTagWeights()` used to scan the entire
+  `engagement_events` table on every Feed refresh — grew unbounded with usage and put refresh
+  latency on the critical path of history size (S1/S4/P2 of the maintainability audit). Fixed by
+  observing that each event's affinity signal (`feed/TagWeights.signalForEvent`) doesn't depend on
+  which tags it applies to, so it can be folded into a per-item running total
+  (`ItemEntity.engagementSignal`, local-only) at write time instead of re-derived from history on
+  every read — `ItemDao.incrementEngagementSignal` (a targeted single-column write, per the pattern
+  above) at `ItemRepository.recordEvent`/`SyncRepository.mergeEngagementEvent`, then one `GROUP BY`
+  (`ItemDao.getTagSignalTotals`) at read time. **The gotcha this created**: `SyncRepository.mergeItem`
+  does a whole-row `REPLACE` from the pulled DTO, which has no `engagementSignal` field at all (it's
+  local-only) — a naive `pulled.toEntity()` would've silently zeroed a device's accumulated signal
+  on any remote content update. Fixed by explicitly carrying `local?.engagementSignal ?: 0.0`
+  forward in that write. **Apply this same instinct to any future local-only column added to a
+  table whose sync-merge path does a whole-row replace** — it needs the same explicit
+  carry-forward, or a remote update will silently clobber it.
+  Retention: raw `engagement_events` rows are pruned once their signal is safely folded in and
+  synced — client-side `work/EngagementEventPurger` (30 days, `dirty=0` only, piggybacks on sync
+  like `TrashPurger`), server-side `purgeOldTombstones` extended to sweep `engagement_events` by
+  `created_at` (reusing `tombstoneRetentionDays`, not a separate constant).
 - **Every synced table's push-side upsert must scope its existence check by `user_id`.**
   `engagement_events` was the one exception until this session (`id`-only lookup) — a same-id
   collision across two different users would leak the other user's `seq` in the ack and silently
@@ -192,25 +225,42 @@ would be jarring.
   match `upsertItem`/`upsertTag`/`upsertItemTag`'s `WHERE id = $1 AND user_id = $2` shape exactly.
 - **Testing**: pure-logic modules stay Compose/DB-free for easy unit testing (`feed/Ranking.kt`,
   `feed/TagWeights.kt`, `feed/PullQuote.kt`, backend `sync/mergeLogic.ts`). Backend tests use
-  Node's built-in `node:test` + `mock.module()` for external deps (no Jest/Vitest) — 60 tests,
-  all passing. Android unit tests (JVM, no real SQLite) use JUnit. Anything that needs a *real*
-  SQLite engine (FTS4 queries, multi-statement transaction atomicity) belongs in
-  `app/src/androidTest/` instead — run via `./gradlew :app:connectedDebugAndroidTest` against a
-  connected device/emulator, using `Room.inMemoryDatabaseBuilder`. Two suites exist there now:
-  `FtsIndexerAndroidTest` (7 tests) and `ItemRepositoryRaceAndroidTest` (14 tests, the
-  data-integrity regression suite from this session). Both currently pass (21/21) on the physical
-  Pixel 8 Pro.
+  Node's built-in `node:test` + `mock.module()` for external deps (no Jest/Vitest) — **74 tests,
+  all passing**, and now run automatically in CI (see below). Android unit tests (JVM, no real
+  SQLite) use JUnit + mockk (mockk mocks concrete final Kotlin classes directly, e.g.
+  `mockk<SyncRepository>()`/`mockk<ItemDao>()` with no `open` needed — see `SyncManagerTest.kt`,
+  `SyncRepositoryReindexBatchingTest.kt`). Anything that needs a *real* SQLite engine (FTS4
+  queries, multi-statement transaction atomicity) belongs in `app/src/androidTest/` instead — run
+  via `./gradlew :app:connectedDebugAndroidTest` against a connected device/emulator, using
+  `Room.inMemoryDatabaseBuilder`. Three suites exist there now: `FtsIndexerAndroidTest` (7 tests),
+  `ItemRepositoryRaceAndroidTest` (18 tests — the original 14 data-integrity regressions plus 4
+  SEC3 note-length-cap tests), and `EngagementSignalAndroidTest` (7 tests, including an on-device
+  benchmark proving `computeUserTagWeights()` stays flat after seeding 20,000 inert
+  `engagement_events` rows). **32/32 currently pass** on the physical Pixel 8 Pro.
+- **Backend CI**: `.github/workflows/ci.yml` runs on every push/PR targeting `main` — `npm ci` →
+  `npm run lint` → `npm test`, Node 20 for the job itself (matches `server/package.json`'s
+  `engines` field), fails the workflow on any lint error or test failure. Confirmed running and
+  green on GitHub Actions. `server/eslint.config.js` is a deliberately lenient baseline
+  (typescript-eslint's non-type-checked `recommended` preset, not `strict`) with one override:
+  `no-unused-vars` recognizes this codebase's existing `_`-prefix convention for an
+  intentionally-unused arg/var/caught-error (`_next`, `_args`, `_rest`, `_firstErr`). Run
+  `npm run lint` locally before pushing backend changes — CI will now catch anything that slips
+  through. `actions/checkout` and `actions/setup-node` are pinned to **v5** (bumped from v4 the
+  same session, commit `0cc9380`) — GitHub deprecated Node 20 as the runtime *those actions'
+  own code* runs on and was silently forcing v4 onto Node 24 anyway; v5 just does that natively
+  and clears the deprecation warning. Unrelated to the job's own `node-version: "20"` input, which
+  is untouched.
 
 ## 5. Current state / what's done
 
 MVP (6 slices) is complete, functionally and visually. Post-MVP: hardening batch, visual polish
 passes, onboarding share-tip, first production deployment, **Slice 1**, **Slice 2**, an enrichment
-failure-handling overhaul, a round of Feed/nav bug fixes, and a full non-functional (scalability/
-maintainability/robustness/security/performance) code audit with its highest-priority findings
-fixed are all done and **committed to `main`** (currently 2 commits ahead of `origin/main` —
-`8665f90` and `a6e2ebb` haven't been pushed yet as of this doc's last update; see §7). Everything
-below is verified end-to-end on a physical Pixel 8 Pro; deployment pieces are verified against the
-live Render service as of their own commit, not re-verified this session.
+failure-handling overhaul, a round of Feed/nav bug fixes, a full non-functional code audit with its
+highest-priority findings fixed, an engagement-signal scalability pass, the remaining
+maintainability-audit cleanup, and basic backend CI are all done and **pushed to `origin/main`**
+(`main`...`origin/main` fully in sync as of this doc's last update — see §7). Everything below is
+verified end-to-end on a physical Pixel 8 Pro; deployment pieces are verified against the live
+Render service as of their own commit, not re-verified this session.
 
 - **Non-functional + functional hardening** (earlier session): Room indexes, single-flight Gemini
   cache, error middleware, backend test suite from scratch; Gemini daily-cap retry counting fix,
@@ -286,36 +336,68 @@ live Render service as of their own commit, not re-verified this session.
     the physical Pixel 8 Pro) reproducing each scenario as a deterministic ordering, plus the full
     existing unit + instrumented + server test suites — all green (21/21 instrumented, full unit
     suite, 60/60 server tests).
-  - **Remaining audit findings were NOT fixed this pass** (lower priority / bigger effort) — see §6.
+  - **Remaining audit findings were NOT fixed this pass** (lower priority / bigger effort) — the two
+    passes below cover almost all of them; see §6 for what's still genuinely open.
+- **Engagement-signal scalability pass** (commit `789777d`, first half), addressing the audit's
+  biggest finding (S1/S4/P2): full `engagement_events` table scan on every Feed refresh, unbounded
+  growth client- and server-side, and that scan sitting on the critical path of the refresh-pill's
+  blur-hold duration. See §4's engagement-signal-aggregate entry for the mechanism. Verified
+  empirically, not just by code inspection: seeded 20,000 inert `engagement_events` rows on-device
+  and confirmed `computeUserTagWeights()` stayed at ~1-3ms regardless (`EngagementSignalAndroidTest`).
+- **Maintainability-audit cleanup pass** (commit `789777d`, second half), items 1-7 of the
+  remaining findings (item 8, S2/P3/P5, deliberately deferred — see §6):
+  - **M1**: `FeedViewModel`'s companion-object session state moved to an injected `FeedSessionState`
+    — see §4.
+  - **M2**: `itemContentIdentical` (client) and `itemContentEqual` (server) now have exhaustive
+    per-field sensitivity tests (a field missing from either previously meant a real change
+    silently compared as unchanged) instead of the 3-5 spot-checks each had before.
+  - **M3**: `EnrichmentErrorCode`'s client/server contract is now tested against a runtime mirror
+    (`server/src/types.ts`'s `ENRICHMENT_ERROR_CODES`, since a TS union type has no runtime
+    representation to test against directly) — catches a code added on one side and not the other.
+  - **M4**: fixed 3 stale doc-comment references to a renamed function (`takeFreshSnapshot()` →
+    `applyFreshSnapshot`/`refreshFeed`).
+  - **S3**: added the `items.deletedAt` index (see §4's migration entry).
+  - **SEC3**: `maxNoteBodyChars` (50,000, enforced at `POST /enrich` + client-side backstop) and
+    `maxSyncPushRows` (20,000, `server/src/config.ts`) — the latter was initially set to 2,000 and
+    had to be raised after the user asked for the real math: guest mode never syncs, so every
+    engagement event a guest generates sits `dirty=1` indefinitely and lands in one push at account
+    migration, comfortably exceeding 2,000 within weeks of ordinary use. 20,000 sits with real
+    headroom above that while still guarding the payload shape the pre-existing 2mb body limit
+    doesn't catch well (many small rows). See `server/src/config.ts`'s doc comment for the full math.
+  - **P1**: FTS re-indexing during a sync pull is now batched/deduped per page
+    (`SyncRepository.reindexItems`) instead of once per item-write plus once per tag-link write —
+    an item with T changed tag-links used to trigger 1+T full rebuilds, now exactly 1.
+- **Basic backend CI** (commits `85dd9e3`, `0cc9380`) — see §4's Backend CI entry. One genuine
+  pre-existing lint violation surfaced and was fixed as a pure identifier rename (`gemini.ts`'s
+  unused outer-catch binding, `firstErr` → `_firstErr`), confirmed by the user rather than silently
+  fixed. `0cc9380` bumped `actions/checkout`/`actions/setup-node` v4→v5 to clear a Node-20-runtime
+  deprecation warning GitHub surfaced on the first real run — verified green afterward.
 
 ## 6. Known open items / pending decisions
 
-- **Remaining code-audit findings, not yet actioned** (full detail was reported in-conversation,
-  not written to a separate doc — re-run a similar audit pass if this list is needed again, or ask
-  the user if they kept notes):
-  - **S1/S4/P2** (the biggest one): `engagement_events` is append-only and never pruned client- or
-    server-side — grows unbounded with usage, and `FeedViewModel.computeUserTagWeights()` scans the
-    *entire* local mirror on every Feed refresh (now specifically on the critical path of the R2-era
-    refresh-pill fix, so refresh latency grows with history size too). Wants a retention/aggregation
-    policy plus (ideally) cached/incrementally-updated tag weights.
-  - **M2**: the item field list is duplicated in lockstep across ~6 sites (entity, DTO mappers ×2,
-    content-equality checks ×2, Postgres schema) with no compile-time link — a missed field in any
-    one silently breaks either sync-skip logic or round-trip fidelity. A round-trip test asserting
-    every field survives DTO↔entity would catch this cheaply.
-  - Smaller items: no index on `deletedAt` despite it gating nearly every hot query (S3); two eager
-    full-table Flow collectors re-materialize the whole items+tags join on every write (S2); FTS
-    re-indexes redundantly during a multi-tag sync pull (P1); `EnrichmentErrorCode` is duplicated
-    client/server with no compile link (M3); Feed's companion-object session state is now
-    "redundant with the suspenders" per §4 (M1).
+- **S2/P3/P5 — deliberately deferred, not a bug**: `observeActiveTagsByUsage` and two eager
+  full-table Flow collectors re-materialize the whole items+tags join on every write. The user
+  explicitly rated this low-urgency-at-current-scale and asked for no action; revisit only if usage
+  growth makes it a real problem.
+- **Push-side pagination**: `SyncManager` pushes every locally-dirty row in one request with no
+  chunking — `maxSyncPushRows` (20,000, `server/src/config.ts`) is a defensive backstop against a
+  pathological payload, not a real fix for genuinely unbounded accumulation. If usage data ever
+  shows real accounts approaching that cap, pagination (chunked push + resume semantics) is the
+  actual fix, not a higher number.
+- **Guest-mode local event accumulation**: a guest's `engagement_events` rows sit `dirty=1`
+  indefinitely (nothing syncs until account migration, and `EngagementEventPurger` only prunes
+  `dirty=0` rows) — not currently a problem since the per-item `engagementSignal` aggregate already
+  captures the affinity value regardless of whether the raw event ever syncs, but a candidate future
+  lever (ring-buffer-style local cap on unsynced events) if the guest-accumulation math in §5's
+  SEC3 entry ever becomes a real complaint rather than a sizing exercise.
 - **Render free tier cold-starts**: the deployed backend spins down after ~15 min idle; first
   request after that takes 30-60s+. Acceptable for now during early tester feedback; revisit
   (paid tier, or a keep-alive ping) if it becomes a real complaint.
-- **Backend has no linting and no CI** — `node:test` suite exists and passes, but nothing runs it
-  automatically. Migrations against the deployed DB are run manually (`npm run migrate`) since
-  Render's Pre-Deploy Command is a paid-tier feature.
 - **Backend in-memory state won't survive horizontal scaling** — content cache, rate limiter, and
   metrics are all per-process. Fine for one instance, would need a shared store (Redis/Postgres)
-  before running more than one.
+  before running more than one. Migrations against the deployed DB are still run manually
+  (`npm run migrate`) since Render's Pre-Deploy Command is a paid-tier feature — CI (§4/§5) covers
+  lint+test, not deployment; this is unrelated and still manual by design.
 - **Direct Share shortcut (sharing-shortcuts) is not implemented.** Deliberate scope cut, not a bug.
 - **Manual "delete forever" / "empty trash" offline edge case**: `permanentlyDeleteItem`/`emptyTrash`
   (the *manual*, user-initiated delete-forever path — distinct from the automatic 30-day sweep R3
@@ -326,44 +408,51 @@ live Render service as of their own commit, not re-verified this session.
 
 ## 7. Up next
 
-No new slice/feature has been scoped by the user yet. All work through the data-integrity audit
-fixes is committed to local `main`, but **`main` is 2 commits ahead of `origin/main`** (not pushed)
-as of this doc's last update — check `git status -sb` / `git log origin/main..HEAD` and confirm with
-the user before pushing if picking this up fresh. Ask the user what's next rather than assuming;
-don't invent scope — the remaining audit findings in §6 are candidates but not yet prioritized into
-a slice.
+No new slice/feature has been scoped by the user yet. All work through the maintainability-audit
+cleanup and backend CI is committed **and pushed** to `origin/main` (`git status -sb` should show
+`main...origin/main` with nothing ahead/behind as of this doc's last update — verify this hasn't
+drifted before assuming it's still true). Ask the user what's next rather than assuming; don't
+invent scope — §6's open items are candidates but not yet prioritized into a slice. The original
+non-functional audit is now fully worked through (every finding is either fixed or explicitly
+deferred by the user with a documented reason) — a good sign this is a natural point for the user
+to pick a new direction rather than mining the same audit further.
 
 ## 8. Recent context
 
-- **The physical Pixel 8 Pro currently has NO local data** — the debug build was reinstalled fresh
-  partway through this session (a signature mismatch from an earlier release-signed install forced
-  an uninstall/reinstall) and is sitting on the sign-in screen. Sign in or continue as guest before
-  testing anything that needs existing items.
-- **USB/adb flakiness observed this session**: the device dropped off `adb devices` entirely at one
-  point mid-session with a Windows driver-level symptom (`Get-PnpDevice` showed a second, unbound
-  `ACER ADB Interface` entry with status `Unknown` alongside the normal working one) — resolved by
-  unplugging/replugging the cable and re-selecting "File transfer" USB mode on the phone, not by
-  any adb-side command (`kill-server`/`start-server` alone didn't fix it). Worth trying that
-  physical replug step first if the device vanishes from `adb devices` again.
-- **This session's git history**, oldest to newest, all on `main`:
-  `164e0c9` (Slice 2 polish + enrichment overhaul + Feed nav fixes, one batched commit) →
-  `7932945` (Library empty-state flash) → `87c5aa0` (bottom nav touch-passthrough) →
-  `a5787d4` (Feed refresh pill race) → `8665f90` (monogram subdomain fix) →
-  `a6e2ebb` (data-integrity audit fixes: R1–R4, SEC1, SEC2). The first commit bundled a large
-  amount of previously-uncommitted work from an earlier session (see prior git log if the exact
-  original authorship split matters) — everything after it is this session's own diagnosis+fix work.
-- **Backend dev server + Postgres were NOT running this session** — the server-side fixes (SEC1,
-  SEC2) were verified via `npx tsc --noEmit` + the existing mocked `node:test` suite (60/60 pass,
-  no live Postgres needed for that suite). If picking up server work that needs a live DB
-  (`/sync` end-to-end, `/enrich` against real Gemini), bring up `docker compose up -d` + `npm run
-  dev` + `adb reverse tcp:4000 tcp:4000` first, per the usual flow.
-- **`ItemRepository`'s constructor signature changed** this session: `ItemRepository(itemDao,
-  ftsIndexer, database)` — the third param (`AnikiDatabase`) is new, used for `withTransaction { }`.
-  `AnikiApplication.kt`'s single construction site was updated; no test files construct
-  `ItemRepository` directly (confirmed via search before making the change), so this was a safe,
-  contained addition. If a future test needs to construct one, it now needs a real or in-memory
-  `AnikiDatabase`, not just a mocked `ItemDao` — see `ItemRepositoryRaceAndroidTest.kt` for the
-  pattern (`Room.inMemoryDatabaseBuilder`).
+- **This session's git history**, all pushed to `origin/main`:
+  `789777d` (engagement-signal scalability pass + the full M1-M4/S3/SEC3/P1 maintainability cleanup,
+  one combined commit — the two pieces of work touched heavily overlapping files, e.g.
+  `SyncRepository.kt`/`AnikiDatabase.kt`/`ItemEntity.kt`, so splitting into separate commits would've
+  needed risky hunk-by-hunk staging within the same files; one well-organized commit message was the
+  safer call) → `85dd9e3` (backend CI: GitHub Actions workflow + baseline ESLint) → `0cc9380`
+  (bumped `actions/checkout`/`actions/setup-node` v4→v5 after GitHub's first real run flagged a
+  Node-20-runtime deprecation warning on those actions specifically, unrelated to the job's own
+  Node 20 — see §4/§5's Backend CI entries; verified green afterward).
+- **The physical Pixel 8 Pro has guest-mode local data**: 3 real, previously-enriched items (a
+  YouTube video, a Wabi-sabi article, a note) from earlier real backend usage, confirmed via a
+  manual on-device walkthrough verifying the M1 `FeedSessionState` refactor at runtime (Feed↔Library
+  switching preserves the frozen card order). Device was not signed into a real account this
+  session — still sitting in guest mode.
+- **Backend dev server + Postgres were NOT started this session** — the CI/lint/SEC3 work was all
+  verified via `npx tsc --noEmit` + the local `npm test`/`npm run lint` commands directly against
+  `server/`, no live Postgres needed. If picking up server work that needs a live DB (`/sync`
+  end-to-end, `/enrich` against real Gemini), bring up `docker compose up -d` + `npm run dev` +
+  `adb reverse tcp:4000 tcp:4000` first, per the usual flow.
+- **Backend now has `server/eslint.config.js` (flat config) and `.github/workflows/ci.yml`** — run
+  `npm run lint` before any backend change lands; CI runs it automatically on push/PR to `main` and
+  is confirmed green (checked directly in the GitHub Actions tab). ESLint/typescript-eslint/@eslint/js
+  are new devDependencies; `server/package-lock.json` was regenerated accordingly.
+- **adb + Git Bash path-mangling gotcha**: any `adb` command referencing an absolute Unix-style
+  device path (`/sdcard/...`) gets silently rewritten to a Windows path by Git Bash's MSYS path
+  conversion unless `MSYS_NO_PATHCONV=1` is set first — `adb pull /sdcard/ui.xml ...` fails with a
+  "No such file" error pointing at a mangled `C:/Program Files/Git/sdcard/ui.xml`-style path
+  otherwise. Set that env var before any `adb pull`/`push`/shell command touching device-absolute
+  paths from this shell.
+- **Driving the physical device via `adb shell input tap` needs `uiautomator dump` for exact
+  coordinates**, not eyeballing a screenshot — `adb shell uiautomator dump /sdcard/ui.xml` (with the
+  path-mangling fix above) then `adb pull` it and grep the target element's `bounds="[x1,y1][x2,y2]"`
+  gives real device-pixel coordinates to tap the center of. `adb shell wm size` confirms the actual
+  physical resolution if unsure.
 - A useful debugging technique from an earlier session, still valid: `adb shell dumpsys gfxinfo
   <pkg> reset` then `dumpsys gfxinfo <pkg>` after an interaction gives real per-frame render timing
   — far more reliable than screenshot timing for ruling in/out genuine rendering jank. Similarly,
