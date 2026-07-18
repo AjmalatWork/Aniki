@@ -1,5 +1,7 @@
 package com.aniki.anikiai.data.repository
 
+import androidx.room.withTransaction
+import com.aniki.anikiai.data.db.AnikiDatabase
 import com.aniki.anikiai.data.db.EngagementEventEntity
 import com.aniki.anikiai.data.db.EngagementEventType
 import com.aniki.anikiai.data.db.FtsIndexer
@@ -17,7 +19,8 @@ import java.util.UUID
 
 class ItemRepository(
     private val itemDao: ItemDao,
-    private val ftsIndexer: FtsIndexer
+    private val ftsIndexer: FtsIndexer,
+    private val database: AnikiDatabase
 ) {
 
     fun observeAllItems(): Flow<List<ItemEntity>> = itemDao.observeAllItems()
@@ -184,6 +187,16 @@ class ItemRepository(
      * that heuristic only ever let a title update once, on the very first enrichment; this
      * lets every re-enrichment refresh the title (e.g. a Retry after a fetch fix, or the
      * Gemini-generated title arriving for a NOTE) right up until the user edits it themselves.
+     *
+     * The item-row write ([ItemDao.applyEnrichmentFields]) is a targeted, edit-lock-aware SQL
+     * UPDATE rather than a getItemById() -> copy() -> updateItem(wholeRow) -- the old pattern read
+     * the full row, then wrote every column back, so a star/delete/title-edit committing in the
+     * gap between that read and this write got silently reverted (and for title specifically,
+     * titleEditedByUser got copied back to its stale value, defeating the edit lock the whole
+     * mechanism exists to enforce). See ItemDao.applyEnrichmentFields's doc for how the targeted
+     * version closes that. The one remaining read-then-act step -- deciding whether to replace AI
+     * tags based on tagsEditedByUser -- is wrapped in [AnikiDatabase.withTransaction] so that
+     * decision can't itself race a concurrent tag edit landing in between.
      */
     suspend fun applyEnrichment(
         itemId: String,
@@ -195,28 +208,22 @@ class ItemRepository(
         eventDate: Long?,
         tags: List<String>
     ) {
-        val current = itemDao.getItemById(itemId) ?: return
         val now = System.currentTimeMillis()
-
-        val resolvedTitle = if (!current.titleEditedByUser && !title.isNullOrBlank()) title else current.title
-
-        val updated = current.copy(
-            title = resolvedTitle,
-            summary = if (current.summaryEditedByUser) current.summary else summary,
-            category = category,
-            thumbnailUrl = thumbnailUrl,
-            entities = entitiesJson,
-            eventDate = eventDate,
-            status = ItemStatus.ENRICHED,
-            updatedAt = now,
-            dirty = true,
-            errorCode = null, // a success clears whatever an earlier failed attempt recorded
-            errorMessage = null
-        )
-        itemDao.updateItem(updated)
-
-        if (!current.tagsEditedByUser) {
-            replaceAiTags(itemId, tags)
+        database.withTransaction {
+            val current = itemDao.getItemById(itemId) ?: return@withTransaction
+            itemDao.applyEnrichmentFields(
+                id = itemId,
+                title = title,
+                summary = summary,
+                category = category,
+                thumbnailUrl = thumbnailUrl,
+                entitiesJson = entitiesJson,
+                eventDate = eventDate,
+                now = now
+            )
+            if (!current.tagsEditedByUser) {
+                replaceAiTags(itemId, tags)
+            }
         }
         syncFtsRow(itemId)
     }
@@ -241,16 +248,7 @@ class ItemRepository(
      *  exception, which this deliberately doesn't try to classify further). Overwrites whatever an
      *  earlier attempt recorded, so the UI always reflects the most recent failure reason. */
     suspend fun markNeedsAttention(itemId: String, errorCode: String? = null, errorMessage: String? = null) {
-        val current = itemDao.getItemById(itemId) ?: return
-        itemDao.updateItem(
-            current.copy(
-                status = ItemStatus.NEEDS_ATTENTION,
-                updatedAt = System.currentTimeMillis(),
-                dirty = true,
-                errorCode = errorCode,
-                errorMessage = errorMessage
-            )
-        )
+        itemDao.markNeedsAttentionRow(itemId, System.currentTimeMillis(), errorCode, errorMessage)
     }
 
     /**
@@ -261,16 +259,7 @@ class ItemRepository(
      * user didn't cause and can't fix by retrying.
      */
     suspend fun markEnrichmentSkipped(itemId: String) {
-        val current = itemDao.getItemById(itemId) ?: return
-        itemDao.updateItem(
-            current.copy(
-                status = ItemStatus.ENRICHED,
-                updatedAt = System.currentTimeMillis(),
-                dirty = true,
-                errorCode = null,
-                errorMessage = null
-            )
-        )
+        itemDao.markEnrichmentSkippedRow(itemId, System.currentTimeMillis())
     }
 
     /** Marks the item viewed for the Feed's resurface/seen terms. Deliberately does not touch
@@ -304,10 +293,7 @@ class ItemRepository(
     }
 
     suspend fun setStarred(itemId: String, starred: Boolean) {
-        val current = itemDao.getItemById(itemId) ?: return
-        itemDao.updateItem(
-            current.copy(isStarred = starred, updatedAt = System.currentTimeMillis(), dirty = true)
-        )
+        itemDao.setStarredColumn(itemId, starred, System.currentTimeMillis())
         // Starring is positive affinity signal; unstarring logs nothing.
         if (starred) recordEvent(itemId, EngagementEventType.STARRED)
     }
@@ -328,11 +314,7 @@ class ItemRepository(
 
     suspend fun updateTitle(itemId: String, title: String) {
         if (title.isBlank()) return
-        val current = itemDao.getItemById(itemId) ?: return
-        val now = System.currentTimeMillis()
-        itemDao.updateItem(
-            current.copy(title = title, titleEditedByUser = true, updatedAt = now, dirty = true)
-        )
+        itemDao.updateTitleColumn(itemId, title, System.currentTimeMillis())
         syncFtsRow(itemId)
     }
 
@@ -348,28 +330,21 @@ class ItemRepository(
      * nothing meaningful to re-enrich yet -- the caller skips enqueueing enrichment in that case.
      */
     suspend fun updateNoteBody(itemId: String, body: String) {
+        // Only read to decide whether this write is even necessary (skip a no-op autosave) --
+        // the actual write below (updateNoteBodyRow) doesn't copy any field from this read, so a
+        // stale value here can at worst cause one redundant write, never a lost concurrent edit.
         val current = itemDao.getItemById(itemId) ?: return
         if (body == current.bodyText) return
         val now = System.currentTimeMillis()
         val reEnriching = body.isNotBlank()
-        val newStatus = if (reEnriching) ItemStatus.PENDING else current.status
-        itemDao.updateItem(
-            current.copy(
-                bodyText = body,
-                status = newStatus,
-                updatedAt = now,
-                dirty = true,
-                // A previous failure no longer describes this content once it's about to be
-                // re-enriched -- clear it rather than leaving a stale reason visible mid-retry.
-                errorCode = if (reEnriching) null else current.errorCode,
-                errorMessage = if (reEnriching) null else current.errorMessage
-            )
-        )
+        // A previous failure no longer describes this content once it's about to be re-enriched --
+        // updateNoteBodyRow clears errorCode/errorMessage exactly when reEnriching, evaluated by
+        // SQLite against the row's live status/errorCode rather than this possibly-stale read.
+        itemDao.updateNoteBodyRow(itemId, body, reEnriching, now)
         syncFtsRow(itemId)
     }
 
     suspend fun addUserTag(itemId: String, label: String) {
-        val current = itemDao.getItemById(itemId) ?: return
         val normalized = label.trim().lowercase()
         if (normalized.isEmpty()) return
         val now = System.currentTimeMillis()
@@ -378,17 +353,16 @@ class ItemRepository(
         itemDao.upsertItemTagCrossRef(
             ItemTagCrossRef(itemId = itemId, tagId = tag.id, updatedAt = now, dirty = true)
         )
-        itemDao.updateItem(current.copy(tagsEditedByUser = true, updatedAt = now, dirty = true))
+        itemDao.markTagsEdited(itemId, now)
         syncFtsRow(itemId)
     }
 
     suspend fun removeTag(itemId: String, tagId: String) {
-        val current = itemDao.getItemById(itemId) ?: return
         val crossRef = itemDao.getActiveCrossRefsForItem(itemId).find { it.tagId == tagId } ?: return
         val now = System.currentTimeMillis()
 
         itemDao.upsertItemTagCrossRef(crossRef.copy(deletedAt = now, updatedAt = now, dirty = true))
-        itemDao.updateItem(current.copy(tagsEditedByUser = true, updatedAt = now, dirty = true))
+        itemDao.markTagsEdited(itemId, now)
         syncFtsRow(itemId)
     }
 
@@ -397,9 +371,7 @@ class ItemRepository(
      *  lists against (see observeTrashedItems), so "delete" and "move to Trash" are the same
      *  action, not two separate states to keep in sync. */
     suspend fun deleteItem(itemId: String) {
-        val current = itemDao.getItemById(itemId) ?: return
-        val now = System.currentTimeMillis()
-        itemDao.updateItem(current.copy(deletedAt = now, updatedAt = now, dirty = true))
+        itemDao.softDeleteItemRow(itemId, System.currentTimeMillis())
         ftsIndexer.remove(itemId)
     }
 
@@ -409,9 +381,7 @@ class ItemRepository(
     /** Un-tombstones an item (clears deletedAt) so it reappears in Library/Feed/search and syncs
      *  that reversal to other devices, exactly like any other content edit. */
     suspend fun restoreItem(itemId: String) {
-        val current = itemDao.getItemById(itemId) ?: return
-        val now = System.currentTimeMillis()
-        itemDao.updateItem(current.copy(deletedAt = null, updatedAt = now, dirty = true))
+        itemDao.restoreItemRow(itemId, System.currentTimeMillis())
         syncFtsRow(itemId)
     }
 
@@ -450,15 +420,25 @@ class ItemRepository(
      * [permanentlyDeleteItem], only touches items already confirmed synced (dirty=false), so an
      * item whose tombstone hasn't reached the server yet is never silently dropped locally before
      * other devices learn about the deletion. Returns the count purged, for logging.
+     *
+     * Deletes each candidate via [ItemDao.hardDeleteExpiredTrashItem], which re-validates the
+     * trashed/expired/synced condition at DELETE time rather than trusting the earlier SELECT --
+     * a restore landing in between (clearing deletedAt) makes that DELETE match zero rows instead
+     * of destroying the just-restored item. Tag cross-refs are only cleaned up when the item row
+     * actually deleted (affectedRows > 0), so a restored item's tags aren't wiped out from under it.
      */
     suspend fun purgeExpiredTrash(retentionMs: Long): Int {
         val cutoff = System.currentTimeMillis() - retentionMs
         val ids = itemDao.getExpiredTrashItemIds(cutoff)
+        var purged = 0
         ids.forEach { id ->
-            itemDao.deleteItemTagsForItem(id)
-            itemDao.hardDeleteItem(id)
+            val deleted = itemDao.hardDeleteExpiredTrashItem(id, cutoff)
+            if (deleted > 0) {
+                itemDao.deleteItemTagsForItem(id)
+                purged++
+            }
         }
-        return ids.size
+        return purged
     }
 
     /**

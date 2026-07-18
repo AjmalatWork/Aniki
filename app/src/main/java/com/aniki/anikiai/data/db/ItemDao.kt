@@ -66,6 +66,23 @@ interface ItemDao {
     @Query("SELECT id FROM items WHERE deletedAt IS NOT NULL AND deletedAt < :cutoff AND dirty = 0")
     suspend fun getExpiredTrashItemIds(cutoff: Long): List<String>
 
+    /**
+     * Self-guarding version of the delete used by [ItemRepository.purgeExpiredTrash]'s automatic
+     * sweep: re-checks the exact same trashed/expired/synced condition [getExpiredTrashItemIds]
+     * selected on, but at DELETE time instead of at the earlier SELECT. Without this, a restore
+     * (which clears deletedAt) landing in the gap between that SELECT and an unconditional DELETE
+     * would permanently hard-delete an item the user just un-trashed -- a concurrent restore now
+     * simply makes this match zero rows instead. Returns the number of rows actually deleted (0 or
+     * 1) so the caller knows whether it's safe to also delete this item's tag cross-refs.
+     */
+    @Query(
+        "DELETE FROM items WHERE id = :id AND deletedAt IS NOT NULL AND deletedAt < :cutoff AND dirty = 0"
+    )
+    suspend fun hardDeleteExpiredTrashItem(id: String, cutoff: Long): Int
+
+    /** Unconditional hard delete for user-initiated "delete forever" (Trash screen's manual
+     *  delete/empty-trash actions) — those are immediate by design, not a background sweep, so
+     *  they don't need [hardDeleteExpiredTrashItem]'s re-validated guard. */
     @Query("DELETE FROM items WHERE id = :id")
     suspend fun hardDeleteItem(id: String)
 
@@ -130,6 +147,104 @@ interface ItemDao {
      *  more than once per device, to bound Gemini cost on a stubbornly-failing note). */
     @Query("UPDATE items SET titleBackfillAttempted = 1 WHERE id = :id")
     suspend fun markTitleBackfillAttempted(id: String)
+
+    // --- Targeted single-purpose column writes -----------------------------------------------
+    // Every method below writes only the columns its own operation legitimately owns, instead of
+    // the old getItemById() -> entity.copy(...) -> updateItem(wholeRow) pattern. That pattern
+    // read a full row in Kotlin, then wrote EVERY column back (including ones the operation never
+    // meant to touch) -- so a star, a delete, or a title edit landing in the gap between another
+    // operation's read and its write got silently reverted, because the later write's stale copy
+    // of that field overwrote the real change. A targeted UPDATE that never mentions a column
+    // can't clobber it no matter what else concurrently wrote to it: SQLite serializes writers, so
+    // whichever of two targeted writes actually commits last simply wins on its own column(s),
+    // with every other column exactly as some other write left it. See ItemRepository's callers
+    // for the full context on each.
+
+    @Query("UPDATE items SET isStarred = :starred, updatedAt = :now, dirty = 1 WHERE id = :id")
+    suspend fun setStarredColumn(id: String, starred: Boolean, now: Long)
+
+    @Query("UPDATE items SET deletedAt = :now, updatedAt = :now, dirty = 1 WHERE id = :id")
+    suspend fun softDeleteItemRow(id: String, now: Long)
+
+    @Query("UPDATE items SET deletedAt = NULL, updatedAt = :now, dirty = 1 WHERE id = :id")
+    suspend fun restoreItemRow(id: String, now: Long)
+
+    @Query("UPDATE items SET title = :title, titleEditedByUser = 1, updatedAt = :now, dirty = 1 WHERE id = :id")
+    suspend fun updateTitleColumn(id: String, title: String, now: Long)
+
+    @Query(
+        "UPDATE items SET status = 'NEEDS_ATTENTION', updatedAt = :now, dirty = 1, " +
+            "errorCode = :errorCode, errorMessage = :errorMessage WHERE id = :id"
+    )
+    suspend fun markNeedsAttentionRow(id: String, now: Long, errorCode: String?, errorMessage: String?)
+
+    @Query(
+        "UPDATE items SET status = 'ENRICHED', updatedAt = :now, dirty = 1, " +
+            "errorCode = NULL, errorMessage = NULL WHERE id = :id"
+    )
+    suspend fun markEnrichmentSkippedRow(id: String, now: Long)
+
+    @Query("UPDATE items SET tagsEditedByUser = 1, updatedAt = :now, dirty = 1 WHERE id = :id")
+    suspend fun markTagsEdited(id: String, now: Long)
+
+    /**
+     * Applies a successful enrichment result via targeted, edit-lock-aware writes. title/summary
+     * are only overwritten when their edit-lock flag (titleEditedByUser/summaryEditedByUser) is
+     * unset -- evaluated by SQLite against the row's CURRENT value at write time, not against a
+     * value read earlier in Kotlin that could go stale if the user's own title/summary edit
+     * committed in the gap between an app-level read and this write (which is exactly how the
+     * edit-lock mechanism used to get silently defeated). Every other touched column
+     * (category/thumbnailUrl/entities/eventDate/status/errorCode/errorMessage) is unconditional,
+     * matching what a successful enrichment always overwrites. Columns this doesn't mention
+     * (isStarred, deletedAt, tagsEditedByUser, ...) are untouched by construction.
+     */
+    @Query(
+        """
+        UPDATE items SET
+            title = CASE WHEN titleEditedByUser = 0 AND :title IS NOT NULL AND :title != '' THEN :title ELSE title END,
+            summary = CASE WHEN summaryEditedByUser = 0 THEN :summary ELSE summary END,
+            category = :category,
+            thumbnailUrl = :thumbnailUrl,
+            entities = :entitiesJson,
+            eventDate = :eventDate,
+            status = 'ENRICHED',
+            updatedAt = :now,
+            dirty = 1,
+            errorCode = NULL,
+            errorMessage = NULL
+        WHERE id = :id
+        """
+    )
+    suspend fun applyEnrichmentFields(
+        id: String,
+        title: String?,
+        summary: String,
+        category: String,
+        thumbnailUrl: String?,
+        entitiesJson: String?,
+        eventDate: Long?,
+        now: Long
+    )
+
+    /**
+     * Targeted note-body write. status only advances to PENDING, and errorCode/errorMessage only
+     * clear, when [reEnriching] -- otherwise those columns (and every column this doesn't mention)
+     * are left exactly as they were, evaluated live by SQLite rather than copied from a possibly
+     * stale Kotlin-side read.
+     */
+    @Query(
+        """
+        UPDATE items SET
+            bodyText = :body,
+            status = CASE WHEN :reEnriching THEN 'PENDING' ELSE status END,
+            updatedAt = :now,
+            dirty = 1,
+            errorCode = CASE WHEN :reEnriching THEN NULL ELSE errorCode END,
+            errorMessage = CASE WHEN :reEnriching THEN NULL ELSE errorMessage END
+        WHERE id = :id
+        """
+    )
+    suspend fun updateNoteBodyRow(id: String, body: String, reEnriching: Boolean, now: Long)
 
     @Transaction
     @Query("SELECT * FROM items WHERE deletedAt IS NULL ORDER BY createdAt DESC")

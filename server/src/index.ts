@@ -23,6 +23,12 @@ import {
 } from "./types.js";
 
 const app = express();
+// Render (and any single-reverse-proxy host) terminates the real client connection and forwards
+// over its internal network -- without this, req.ip resolves to the proxy's own address for every
+// request, which silently turns the per-IP /enrich rate limiter below into one shared bucket for
+// the entire userbase instead of an actual per-abuser guard. `1` = trust exactly one hop
+// (Render's edge), so X-Forwarded-For is honored but a client can't spoof further hops behind it.
+app.set("trust proxy", 1);
 app.use(helmet());
 // Default body-parser limit is ~100kb -- too small for a long NOTE bodyText or a large sync push
 // batch. 2mb comfortably covers both without opening the door to unbounded request bodies.

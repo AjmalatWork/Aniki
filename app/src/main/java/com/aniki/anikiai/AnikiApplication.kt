@@ -24,7 +24,7 @@ class AnikiApplication : Application(), SingletonImageLoader.Factory {
     private val ftsIndexer by lazy { FtsIndexer(database.itemDao()) }
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    val repository by lazy { ItemRepository(database.itemDao(), ftsIndexer) }
+    val repository by lazy { ItemRepository(database.itemDao(), ftsIndexer, database) }
     val syncRepository by lazy { SyncRepository(database.itemDao(), ftsIndexer) }
     val syncCursorStore by lazy { SyncCursorStore(this) }
 

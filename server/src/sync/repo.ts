@@ -371,9 +371,13 @@ async function upsertItemTag(client: PoolClient, uid: string, incoming: ItemTagD
 
 /** Append-only, one-way, insert-if-not-exists — never conflicts, never updated. */
 async function upsertEngagementEvent(client: PoolClient, uid: string, incoming: EngagementEventDto): Promise<Ack> {
-  const existing = await client.query<{ seq: number }>("SELECT seq FROM engagement_events WHERE id = $1", [
-    incoming.id,
-  ]);
+  // Scoped by user_id like every other table's upsert (upsertItem/upsertTag/upsertItemTag) --
+  // without it, a client-generated UUID colliding with another user's event id would leak that
+  // user's seq in the ack and silently drop this user's own event via ON CONFLICT DO NOTHING.
+  const existing = await client.query<{ seq: number }>(
+    "SELECT seq FROM engagement_events WHERE id = $1 AND user_id = $2",
+    [incoming.id, uid]
+  );
   if (existing.rowCount !== 0) {
     return { clientId: incoming.id, id: incoming.id, seq: existing.rows[0].seq };
   }
@@ -387,7 +391,17 @@ async function upsertEngagementEvent(client: PoolClient, uid: string, incoming: 
   );
   if (inserted.rowCount === 0) {
     // Lost a race with a concurrent identical push; fetch the winner's seq.
-    const row = await client.query<{ seq: number }>("SELECT seq FROM engagement_events WHERE id = $1", [incoming.id]);
+    const row = await client.query<{ seq: number }>(
+      "SELECT seq FROM engagement_events WHERE id = $1 AND user_id = $2",
+      [incoming.id, uid]
+    );
+    if (row.rowCount === 0) {
+      // `id` is only globally unique, not per-user (see migrations/001_init.sql) -- ON CONFLICT
+      // fired against a row owned by a *different* user (a UUID collision, astronomically
+      // unlikely but not impossible). Fail loudly rather than crashing on undefined access or
+      // silently returning another user's seq.
+      throw new Error(`engagement_events id collision across users: id=${incoming.id}`);
+    }
     return { clientId: incoming.id, id: incoming.id, seq: row.rows[0].seq };
   }
   return { clientId: incoming.id, id: incoming.id, seq: inserted.rows[0].seq };
