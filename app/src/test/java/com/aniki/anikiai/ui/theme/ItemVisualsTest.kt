@@ -41,6 +41,30 @@ class ItemVisualsTest {
     }
 
     @Test
+    fun `monogram letter uses the site name, not the subdomain the host actually carries`() {
+        // Uri.host always includes the subdomain, so these are the real production inputs.
+        assertEquals("T", monogramLetterFor("www.theverge.com"))
+        assertEquals("W", monogramLetterFor("en.wikipedia.org"))
+        assertEquals("N", monogramLetterFor("m.nytimes.com"))
+        assertEquals("B", monogramLetterFor("bbc.co.uk")) // two-part public suffix
+    }
+
+    @Test
+    fun `every subdomain of a site shares the site's color`() {
+        val bare = monogramColorsFor("theverge.com")
+        assertEquals(bare, monogramColorsFor("www.theverge.com"))
+        assertEquals(bare, monogramColorsFor("m.theverge.com"))
+    }
+
+    @Test
+    fun `registrable label strips subdomains and public suffix`() {
+        assertEquals("theverge", registrableLabelFor("www.theverge.com"))
+        assertEquals("wikipedia", registrableLabelFor("en.wikipedia.org"))
+        assertEquals("bbc", registrableLabelFor("bbc.co.uk"))
+        assertEquals("example", registrableLabelFor("example.com"))
+    }
+
+    @Test
     fun `monogram letter falls back to a question mark for a blank domain`() {
         assertEquals("?", monogramLetterFor(""))
         assertEquals("?", monogramLetterFor("   "))

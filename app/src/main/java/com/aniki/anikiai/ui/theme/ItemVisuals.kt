@@ -43,19 +43,45 @@ private val monogramPalette = listOf(
     SealTint4 to Kon
 )
 
+/** Second-level public suffixes: the label before the TLD in multi-part suffixes like
+ *  bbc.co.uk / example.com.au / school.ac.in, so they aren't mistaken for the site name. */
+private val secondLevelSuffixes = setOf("co", "com", "org", "net", "gov", "edu", "ac")
+
+/**
+ * The site's primary (registrable) label, subdomains and public suffix stripped:
+ * "www.theverge.com" -> "theverge", "en.wikipedia.org" -> "wikipedia", "bbc.co.uk" -> "bbc".
+ *
+ * A [Uri.host] always carries whatever subdomain the URL had (www / m / en / ...), so both the
+ * monogram letter and its color must normalize down to this label first -- otherwise every www.*
+ * site collapses to one "W" tile and a language/mobile subdomain gives the wrong initial. A
+ * deliberately lightweight heuristic (drop the TLD, then a second-level suffix if one remains),
+ * not a full Public Suffix List -- more than enough for a one-letter monogram + a color bucket.
+ */
+fun registrableLabelFor(host: String): String {
+    val labels = host.lowercase().split('.').filter { it.isNotEmpty() }
+    if (labels.size <= 1) return labels.firstOrNull().orEmpty()
+    // Last label is the TLD; the one before it is normally the site name...
+    var primaryIndex = labels.size - 2
+    // ...unless that's itself a second-level suffix (co.uk, com.au), then step back once more.
+    if (primaryIndex >= 1 && labels[primaryIndex] in secondLevelSuffixes) primaryIndex -= 1
+    return labels[primaryIndex]
+}
+
 /**
  * Deterministic on-palette (background, glyph color) pair for an article's monogram tile: hashes
- * the domain into [monogramPalette] rather than free RGB space, so the same domain always lands
- * on the same tone and every tone stays in the oxblood/parchment family.
+ * the site's [registrableLabelFor] label into [monogramPalette] rather than free RGB space, so
+ * every subdomain of the same site lands on the same tone and every tone stays in the
+ * oxblood/parchment family.
  */
-fun monogramColorsFor(domain: String): Pair<Color, Color> {
-    val index = Math.floorMod(domain.hashCode(), monogramPalette.size)
+fun monogramColorsFor(host: String): Pair<Color, Color> {
+    val index = Math.floorMod(registrableLabelFor(host).hashCode(), monogramPalette.size)
     return monogramPalette[index]
 }
 
-/** First letter of a domain, uppercased, for the monogram glyph (e.g. "theverge.com" -> "T"). */
-fun monogramLetterFor(domain: String): String =
-    domain.trim().firstOrNull { it.isLetterOrDigit() }?.uppercase() ?: "?"
+/** First letter of a site's [registrableLabelFor] label, uppercased, for the monogram glyph
+ *  (e.g. "www.theverge.com" -> "T", "en.wikipedia.org" -> "W"). */
+fun monogramLetterFor(host: String): String =
+    registrableLabelFor(host).firstOrNull { it.isLetterOrDigit() }?.uppercase() ?: "?"
 
 /**
  * Small below-thumbnail type glyph (Library rows, "polish pass 2" item 1) -- deliberately not
