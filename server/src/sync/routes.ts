@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { requireAuth } from "../auth/middleware.js";
 import { config } from "../config.js";
 import { logAndRecord } from "../metrics.js";
+import { exceedsPushRowCap, pushRowCount } from "./pushLimits.js";
 import { pullChanges, pushChanges } from "./repo.js";
 import type { PushRequest } from "./types.js";
 
@@ -47,6 +48,18 @@ syncRouter.post("/", async (req: Request, res: Response) => {
     itemTags: body.itemTags ?? [],
     engagementEvents: body.engagementEvents ?? [],
   };
+
+  // SEC3: a defensive backstop, not a tight operational limit -- pushChanges upserts every row
+  // sequentially inside one Postgres transaction, so an unusually large batch holds locks and the
+  // transaction open for a correspondingly long time. See config.ts's maxSyncPushRows for why this
+  // needs to sit well above a realistic single-device backlog (the client has no push-side
+  // pagination today).
+  if (exceedsPushRowCap(request, config.maxSyncPushRows)) {
+    res.status(400).json({
+      error: `Push batch too large (${pushRowCount(request)} rows, max ${config.maxSyncPushRows})`,
+    });
+    return;
+  }
 
   const start = Date.now();
   try {

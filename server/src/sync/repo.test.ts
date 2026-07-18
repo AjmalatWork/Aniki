@@ -13,7 +13,12 @@ interface FakeRow {
 }
 
 let queryLog: QueryCall[] = [];
-let rowCounts: { items: number; tags: number; itemTags: number } = { items: 0, tags: 0, itemTags: 0 };
+let rowCounts: { items: number; tags: number; itemTags: number; engagementEvents: number } = {
+  items: 0,
+  tags: 0,
+  itemTags: 0,
+  engagementEvents: 0,
+};
 let fakeTables: {
   items: FakeRow[];
   tags: FakeRow[];
@@ -36,9 +41,10 @@ mock.module("../db/pool.js", {
         queryLog.push({ sql, params });
 
         if (sql.trim().startsWith("DELETE")) {
+          if (sql.includes("FROM item_tags")) return { rowCount: rowCounts.itemTags };
           if (sql.includes("FROM items")) return { rowCount: rowCounts.items };
           if (sql.includes("FROM tags")) return { rowCount: rowCounts.tags };
-          if (sql.includes("FROM item_tags")) return { rowCount: rowCounts.itemTags };
+          if (sql.includes("FROM engagement_events")) return { rowCount: rowCounts.engagementEvents };
           return { rowCount: 0 };
         }
 
@@ -116,37 +122,42 @@ function tagRow(seq: number, overrides: Partial<FakeRow> = {}): FakeRow {
 // purgeOldTombstones
 // -----------------------------------------------------------------
 
-test("purgeOldTombstones: deletes from items, tags, and item_tags, and reports each count", async () => {
+test("purgeOldTombstones: deletes from items, tags, item_tags, and engagement_events, and reports each count", async () => {
   queryLog = [];
-  rowCounts = { items: 3, tags: 1, itemTags: 2 };
+  rowCounts = { items: 3, tags: 1, itemTags: 2, engagementEvents: 5 };
 
   const result = await purgeOldTombstones(90 * 24 * 60 * 60 * 1000);
 
-  assert.deepEqual(result, { items: 3, tags: 1, itemTags: 2 });
-  assert.equal(queryLog.length, 3);
+  assert.deepEqual(result, { items: 3, tags: 1, itemTags: 2, engagementEvents: 5 });
+  assert.equal(queryLog.length, 4);
   assert.ok(queryLog.some((c) => c.sql.includes("FROM items") && c.sql.includes("deleted_at IS NOT NULL")));
   assert.ok(queryLog.some((c) => c.sql.includes("FROM tags") && c.sql.includes("deleted_at IS NOT NULL")));
   assert.ok(queryLog.some((c) => c.sql.includes("FROM item_tags") && c.sql.includes("deleted_at IS NOT NULL")));
+  assert.ok(queryLog.some((c) => c.sql.includes("FROM engagement_events")));
 });
 
-test("purgeOldTombstones: never touches engagement_events (append-only, no deleted_at column)", async () => {
+test("purgeOldTombstones: engagement_events purges by created_at, not deleted_at (it has no deleted_at column, S4)", async () => {
   queryLog = [];
-  rowCounts = { items: 0, tags: 0, itemTags: 0 };
+  rowCounts = { items: 0, tags: 0, itemTags: 0, engagementEvents: 0 };
 
   await purgeOldTombstones(90 * 24 * 60 * 60 * 1000);
 
-  assert.ok(!queryLog.some((c) => c.sql.includes("engagement_events")));
+  const eventsCall = queryLog.find((c) => c.sql.includes("FROM engagement_events"));
+  assert.ok(eventsCall, "expected a DELETE against engagement_events");
+  assert.ok(eventsCall!.sql.includes("created_at"));
+  assert.ok(!eventsCall!.sql.includes("deleted_at"));
 });
 
-test("purgeOldTombstones: cutoff passed to every query is retentionMs before now", async () => {
+test("purgeOldTombstones: cutoff passed to every query, including engagement_events, is retentionMs before now", async () => {
   queryLog = [];
-  rowCounts = { items: 0, tags: 0, itemTags: 0 };
+  rowCounts = { items: 0, tags: 0, itemTags: 0, engagementEvents: 0 };
   const retentionMs = 5 * 24 * 60 * 60 * 1000;
   const before = Date.now() - retentionMs;
 
   await purgeOldTombstones(retentionMs);
 
   const after = Date.now() - retentionMs;
+  assert.equal(queryLog.length, 4);
   for (const call of queryLog) {
     const cutoff = call.params[0] as number;
     assert.ok(cutoff >= before && cutoff <= after, `cutoff ${cutoff} should be ~${before}-${after}`);
@@ -155,11 +166,11 @@ test("purgeOldTombstones: cutoff passed to every query is retentionMs before now
 
 test("purgeOldTombstones: a zero row count is reported correctly, not treated as an error", async () => {
   queryLog = [];
-  rowCounts = { items: 0, tags: 0, itemTags: 0 };
+  rowCounts = { items: 0, tags: 0, itemTags: 0, engagementEvents: 0 };
 
   const result = await purgeOldTombstones(90 * 24 * 60 * 60 * 1000);
 
-  assert.deepEqual(result, { items: 0, tags: 0, itemTags: 0 });
+  assert.deepEqual(result, { items: 0, tags: 0, itemTags: 0, engagementEvents: 0 });
 });
 
 // -----------------------------------------------------------------

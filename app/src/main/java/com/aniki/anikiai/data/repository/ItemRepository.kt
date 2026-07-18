@@ -12,10 +12,23 @@ import com.aniki.anikiai.data.db.ItemTagCrossRef
 import com.aniki.anikiai.data.db.ItemType
 import com.aniki.anikiai.data.db.ItemWithTags
 import com.aniki.anikiai.data.db.TagEntity
-import com.aniki.anikiai.feed.EngagementRecord
-import com.aniki.anikiai.feed.computeTagWeights
+import com.aniki.anikiai.feed.normalizeTagWeights
+import com.aniki.anikiai.feed.signalForEvent
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
+
+/**
+ * SEC3 (maintainability audit): defensive backstop matching the server's `maxNoteBodyChars`
+ * (server/src/config.ts, default 50,000 -- see its doc for the full reasoning: roughly 4x
+ * gemini.ts's own 12,000-char prompt-truncation budget, generous headroom for a legitimately long
+ * pasted note while bounding worst-case storage/sync payload size). The two constants aren't
+ * compile-linked (one's a Kotlin const, the other an env-overridable server default) -- this one
+ * exists so a single device's own note never grows past a sane size even before it reaches the
+ * network, silently truncating rather than blocking the save (an autosave mid-type shouldn't ever
+ * fail outright). The server-side cap in POST /enrich remains the real boundary enforcement, since
+ * it's reachable directly and can't rely on client cooperation.
+ */
+private const val MAX_NOTE_BODY_CHARS = 50_000
 
 class ItemRepository(
     private val itemDao: ItemDao,
@@ -37,16 +50,34 @@ class ItemRepository(
     suspend fun getItemsWithTagsSnapshot(): List<ItemWithTags> = itemDao.getAllItemsWithTags()
 
     /**
-     * Per-tag affinity weights derived offline from the local engagement mirror (Task 2). Pure math
-     * lives in feed/TagWeights; this only assembles events with their items' tags. Empty history ->
+     * Per-tag affinity weights derived from the local engagement mirror (Task 2; scalability pass
+     * S1/P2). Reads the incrementally-maintained items.engagementSignal column (see
+     * ItemDao.getTagSignalTotals, recordEvent below, and SyncRepository.mergeEngagementEvent) via
+     * one GROUP BY, rather than scanning the full engagement_events history and re-deriving
+     * per-tag signal on every call the way this used to -- cost now tracks the size of the active
+     * library (which the Feed already scales with), not months of accumulated event history. Pure
+     * normalization math (feed/TagWeights.normalizeTagWeights) is shared with the still-tested
+     * pure-event-list path (computeTagWeights) so both paths normalize identically. Empty ->
      * empty map = cold start.
      */
     suspend fun computeUserTagWeights(): Map<String, Double> {
-        val events = itemDao.getAllEngagementEvents()
-        if (events.isEmpty()) return emptyMap()
-        val labelsByItem = itemDao.getAllActiveItemTagLabels().groupBy({ it.itemId }, { it.label })
-        val records = events.map { EngagementRecord(it.eventType, it.value, labelsByItem[it.itemId].orEmpty()) }
-        return computeTagWeights(records)
+        val totals = itemDao.getTagSignalTotals()
+        if (totals.isEmpty()) return emptyMap()
+        return normalizeTagWeights(totals.associate { it.label to it.signal })
+    }
+
+    /**
+     * Client-side mirror of the server's engagement-event GC (server/src/sync/repo.ts's
+     * purgeOldTombstones, extended this same pass to also purge engagement_events, reusing the
+     * same TOMBSTONE_RETENTION_DAYS window) -- purges local engagement_events rows that are both
+     * synced (dirty=false) and older than [retentionMs]. Safe because every event's signal is
+     * folded into its item's engagementSignal at the moment it's recorded/merged (see recordEvent,
+     * SyncRepository.mergeEngagementEvent), so the raw row is disposable once pushed -- pruning it
+     * cannot shift any tag weight. See work/EngagementEventPurger for the caller/schedule.
+     */
+    suspend fun pruneOldEngagementEvents(retentionMs: Long): Int {
+        val cutoff = System.currentTimeMillis() - retentionMs
+        return itemDao.pruneOldEngagementEvents(cutoff)
     }
 
     /**
@@ -157,7 +188,8 @@ class ItemRepository(
 
     suspend fun createNote(title: String?, body: String): ItemEntity {
         val now = System.currentTimeMillis()
-        val resolvedTitle = title?.takeIf { it.isNotBlank() } ?: body.take(60)
+        val boundedBody = body.take(MAX_NOTE_BODY_CHARS)
+        val resolvedTitle = title?.takeIf { it.isNotBlank() } ?: boundedBody.take(60)
 
         val item = ItemEntity(
             id = UUID.randomUUID().toString(),
@@ -165,7 +197,7 @@ class ItemRepository(
             sourceUrl = null,
             normalizedUrl = null,
             title = resolvedTitle,
-            bodyText = body,
+            bodyText = boundedBody,
             summary = null,
             thumbnailUrl = null,
             category = null,
@@ -298,9 +330,15 @@ class ItemRepository(
         if (starred) recordEvent(itemId, EngagementEventType.STARRED)
     }
 
-    /** Appends a syncable engagement event (dirty=true so Slice 3's push carries it up). */
+    /** Appends a syncable engagement event (dirty=true so Slice 3's push carries it up) and folds
+     *  its signal into the item's running engagementSignal total (S1/P2's incremental-aggregate
+     *  path -- see computeUserTagWeights). The rowId != -1 check guards against double-folding: a
+     *  fresh UUID here always inserts, but recordEvent and SyncRepository.mergeEngagementEvent
+     *  share this exact shape, and the pulled-event path (mergeEngagementEvent) can legitimately
+     *  see a duplicate id on a re-delivered sync page, where OnConflictStrategy.IGNORE makes the
+     *  insert (and rightly so) a no-op -- folding its signal anyway would double-count it. */
     private suspend fun recordEvent(itemId: String, type: String, value: Double? = null) {
-        itemDao.insertEngagementEvent(
+        val rowId = itemDao.insertEngagementEvent(
             EngagementEventEntity(
                 id = UUID.randomUUID().toString(),
                 itemId = itemId,
@@ -310,6 +348,7 @@ class ItemRepository(
                 dirty = true
             )
         )
+        if (rowId != -1L) itemDao.incrementEngagementSignal(itemId, signalForEvent(type, value))
     }
 
     suspend fun updateTitle(itemId: String, title: String) {
@@ -330,17 +369,18 @@ class ItemRepository(
      * nothing meaningful to re-enrich yet -- the caller skips enqueueing enrichment in that case.
      */
     suspend fun updateNoteBody(itemId: String, body: String) {
+        val boundedBody = body.take(MAX_NOTE_BODY_CHARS)
         // Only read to decide whether this write is even necessary (skip a no-op autosave) --
         // the actual write below (updateNoteBodyRow) doesn't copy any field from this read, so a
         // stale value here can at worst cause one redundant write, never a lost concurrent edit.
         val current = itemDao.getItemById(itemId) ?: return
-        if (body == current.bodyText) return
+        if (boundedBody == current.bodyText) return
         val now = System.currentTimeMillis()
-        val reEnriching = body.isNotBlank()
+        val reEnriching = boundedBody.isNotBlank()
         // A previous failure no longer describes this content once it's about to be re-enriched --
         // updateNoteBodyRow clears errorCode/errorMessage exactly when reEnriching, evaluated by
         // SQLite against the row's live status/errorCode rather than this possibly-stale read.
-        itemDao.updateNoteBodyRow(itemId, body, reEnriching, now)
+        itemDao.updateNoteBodyRow(itemId, boundedBody, reEnriching, now)
         syncFtsRow(itemId)
     }
 

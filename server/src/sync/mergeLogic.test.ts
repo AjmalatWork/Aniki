@@ -94,6 +94,47 @@ test("itemContentEqual: differing updatedAt is not equal", () => {
 });
 
 // -----------------------------------------------------------------
+// M2 (maintainability audit): itemContentEqual is one of ~6 lockstep sites for the item field
+// list (entity, DTO mappers x2, content-equality checks x2, Postgres schema) with no compile-time
+// link between them -- a field missing from itemContentEqual specifically means a real change to
+// that field is silently treated as NO_OP (decideUpsert) and never propagates. The five spot-check
+// tests above only ever covered title/entities/deletedAt/titleLocked/updatedAt; this generates one
+// assertion per field actually present on `baseItem()` instead, so it automatically covers every
+// field ItemDto has today AND any field added in the future -- TypeScript itself forces baseItem()
+// to supply a value for any new required ItemDto field (a compile error otherwise), and this test
+// then requires itemContentEqual to be sensitive to it, with no separate list to remember to
+// update. `id` is deliberately excluded: it's identity, not content, and itemContentEqual never
+// compares it by design.
+// -----------------------------------------------------------------
+
+/** Produces a value that's guaranteed to differ from `value`, generically by JS runtime type --
+ *  good enough for an equality-sensitivity check, not a "valid" value for the field's real domain
+ *  (e.g. `status` might become "status-changed", not a real status enum member -- irrelevant here,
+ *  since itemContentEqual only ever does `===`/JSON.stringify structural comparison, never domain
+ *  validation). */
+function differingValue(value: unknown): unknown {
+  if (value === null) return "sentinel-non-null";
+  if (typeof value === "boolean") return !value;
+  if (typeof value === "number") return value + 1;
+  if (typeof value === "string") return `${value}-changed`;
+  if (typeof value === "object") return { ...(value as Record<string, unknown>), __sentinel: true };
+  return value;
+}
+
+test("itemContentEqual: changing any single field alone (except id) makes two items compare as different", () => {
+  const base = baseItem();
+  for (const key of Object.keys(base) as (keyof ItemDto)[]) {
+    if (key === "id") continue; // identity, not content -- intentionally excluded from itemContentEqual
+    const changed = { ...base, [key]: differingValue(base[key]) } as ItemDto;
+    assert.equal(
+      itemContentEqual(base, changed),
+      false,
+      `itemContentEqual should be sensitive to a change in '${key}' alone`
+    );
+  }
+});
+
+// -----------------------------------------------------------------
 // tagContentEqual
 // -----------------------------------------------------------------
 

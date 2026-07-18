@@ -19,11 +19,16 @@ object ItemStatus {
 @Entity(
     tableName = "items",
     // normalizedUrl backs the dedupe lookup on every save; createdAt backs the default sort
-    // order; status backs the pending-items reconciliation scan. All previously unindexed.
+    // order; status backs the pending-items reconciliation scan; deletedAt backs the
+    // `WHERE deletedAt IS NULL`/`IS NOT NULL` filter present in nearly every hot read query
+    // (observeAllItems, observeAllItemsWithTags, search, getAllItemsWithTags) plus the trash
+    // purge scan (getExpiredTrashItemIds) -- previously unindexed despite being the single most
+    // common predicate in the whole query set (S3 of the maintainability audit).
     indices = [
         Index(value = ["normalizedUrl"]),
         Index(value = ["createdAt"]),
-        Index(value = ["status"])
+        Index(value = ["status"]),
+        Index(value = ["deletedAt"])
     ]
 )
 data class ItemEntity(
@@ -66,7 +71,7 @@ data class ItemEntity(
     val isDemo: Boolean = false,
     // Local-only (not part of SyncItemDto/synced) -- whether the Feed's one-time "you just shared
     // this" landing animation has already played for this item. Only ever meaningful when isDemo
-    // is true; see FeedViewModel.takeFreshSnapshot(), which sets this the moment it decides to animate the
+    // is true; see FeedViewModel.applyFreshSnapshot(), which sets this the moment it decides to animate the
     // item so a later refresh() (re-entering Feed) or a fresh app launch never replays it.
     val demoLandingAnimationShown: Boolean = false,
     // Local-only (not part of SyncItemDto/synced) -- why the last enrichment attempt landed on
@@ -81,5 +86,14 @@ data class ItemEntity(
     // device's attempt, not user content, and the underlying `status` (which IS synced) already
     // tells another device an item needs attention even without the detail.
     val errorCode: String? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    // Local-only (not part of SyncItemDto/synced) -- running total of this item's engagement
+    // signal (see feed.signalForEvent), incrementally folded in by ItemRepository.recordEvent
+    // (own events) and SyncRepository.mergeEngagementEvent (pulled events) as each event lands,
+    // rather than recomputed from the full engagement_events history on every feed refresh (see
+    // ItemRepository.computeUserTagWeights). Each device maintains its own total independently,
+    // like every other local-only column -- SyncRepository.mergeItem explicitly preserves it
+    // across a pulled item's whole-row replace (see its doc) so a remote content update can't
+    // silently zero out signal this device already folded in.
+    val engagementSignal: Double = 0.0
 )

@@ -75,6 +75,7 @@ fun AppRoot() {
 
         RootState.MAIN -> AnikiNavHost(
             repository = appContext.repository,
+            feedSessionState = appContext.feedSessionState,
             api = NetworkClient.api,
             isSignedIn = authManager.isSignedIn,
             userEmail = authManager.currentUser?.email,

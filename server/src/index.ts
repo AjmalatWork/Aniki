@@ -2,6 +2,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import helmet from "helmet";
 import { accountRouter } from "./account/routes.js";
 import { config } from "./config.js";
+import { isNoteBodyTooLong } from "./enrichLimits.js";
 import { extractArticle } from "./extract/article.js";
 import { extractYouTube } from "./extract/youtube.js";
 import { enrichWithGemini } from "./gemini.js";
@@ -69,6 +70,17 @@ app.post("/enrich", async (req: Request, res: Response) => {
   }
 
   const { id, type, sourceUrl, bodyText } = body as EnrichRequest;
+
+  // SEC3: reject an oversized NOTE body at the boundary rather than letting it flow untruncated
+  // through hashing/storage/every sync round-trip before gemini.ts's own truncation catches it
+  // right before the LLM call -- see config.ts's maxNoteBodyChars for the reasoning and value.
+  if (isNoteBodyTooLong(type, bodyText, config.maxNoteBodyChars)) {
+    res.status(400).json({
+      error: `Note body too long (${(bodyText as string).length} chars, max ${config.maxNoteBodyChars})`,
+      code: "GENERIC",
+    });
+    return;
+  }
 
   try {
     const extracted = await extractContent(type, sourceUrl, bodyText);
@@ -210,7 +222,7 @@ async function runTombstoneGc(): Promise<void> {
     const result = await purgeOldTombstones(config.tombstoneRetentionDays * ONE_DAY_MS);
     console.log(
       `[tombstone-gc] purged items=${result.items} tags=${result.tags} itemTags=${result.itemTags} ` +
-        `retentionDays=${config.tombstoneRetentionDays}`
+        `engagementEvents=${result.engagementEvents} retentionDays=${config.tombstoneRetentionDays}`
     );
   } catch (err) {
     // Never fatal -- e.g. Postgres not reachable in local dev without Docker running. /enrich

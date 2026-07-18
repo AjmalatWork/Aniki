@@ -61,4 +61,42 @@ class TagWeightsTest {
         val weights = computeTagWeights(listOf(rec(EngagementEventType.SHOWN, listOf("x"))))
         assertEquals(emptyMap<String, Double>(), weights)
     }
+
+    // -----------------------------------------------------------------
+    // signalForEvent / normalizeTagWeights: extracted so ItemRepository can fold each event's
+    // signal into an item's running engagementSignal total incrementally (S1/P2 scalability pass)
+    // instead of recomputing from a full event scan. computeTagWeights itself is built on top of
+    // both and is unchanged above -- these just cover the extracted pieces directly.
+    // -----------------------------------------------------------------
+
+    @Test
+    fun `signalForEvent matches TagWeightConfig defaults per event type`() {
+        val c = TagWeightConfig()
+        assertEquals(c.opened, signalForEvent(EngagementEventType.OPENED, null), 1e-9)
+        assertEquals(c.starred, signalForEvent(EngagementEventType.STARRED, null), 1e-9)
+        assertEquals(c.dismissed, signalForEvent(EngagementEventType.DISMISSED, null), 1e-9)
+        assertEquals(c.swipedFast, signalForEvent(EngagementEventType.SWIPED_FAST, null), 1e-9)
+        assertEquals(0.0, signalForEvent(EngagementEventType.SHOWN, null), 1e-9)
+    }
+
+    @Test
+    fun `signalForEvent clamps DWELL at the full-dwell ceiling`() {
+        val c = TagWeightConfig()
+        assertEquals(c.dwellMax, signalForEvent(EngagementEventType.DWELL, c.dwellFullMs * 3), 1e-9)
+        assertEquals(c.dwellMax / 2, signalForEvent(EngagementEventType.DWELL, c.dwellFullMs / 2), 1e-9)
+    }
+
+    @Test
+    fun `normalizeTagWeights matches computeTagWeights' own normalization for the same raw totals`() {
+        val raw = mapOf("a" to 2.0, "b" to 1.0, "c" to -1.0)
+        val normalized = normalizeTagWeights(raw)
+        assertEquals(1.0, normalized["a"]!!, 1e-9)
+        assertEquals(0.5, normalized["b"]!!, 1e-9)
+        assertEquals(-0.5, normalized["c"]!!, 1e-9)
+    }
+
+    @Test
+    fun `normalizeTagWeights of an empty map is empty (cold start)`() {
+        assertEquals(emptyMap<String, Double>(), normalizeTagWeights(emptyMap()))
+    }
 }

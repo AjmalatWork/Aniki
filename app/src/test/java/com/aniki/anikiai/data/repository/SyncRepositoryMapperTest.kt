@@ -152,4 +152,102 @@ class SyncRepositoryMapperTest {
         assertEquals(event.value, dto.value)
         assertEquals(event.createdAt, dto.createdAt)
     }
+
+    // -----------------------------------------------------------------
+    // M2 (maintainability audit): itemContentIdentical is the client-side counterpart of the
+    // round-trip mapper tests above -- and a genuinely separate risk from them. A field missing
+    // from toDto()/toEntity() drops data on round-trip (already caught above); a field missing
+    // from itemContentIdentical instead makes a *real* change to that field silently compare as
+    // "no change," so mergeItem treats a genuine pulled update as KEEP_LOCAL/NO_OP and drops it.
+    // Moved to a top-level `internal fun` (see SyncRepository.kt) specifically so it's directly
+    // testable here, exhaustively, one field at a time.
+    //
+    // Unlike the server's equivalent test (mergeLogic.test.ts), this list is hand-maintained, not
+    // derived from the fixture's own keys -- Kotlin data classes have no cheap runtime reflection
+    // in this project, so there's no free way to enumerate ItemEntity's fields at test time. A
+    // future field added to itemContentIdentical needs a matching FieldCase entry added here by
+    // hand for this test to keep covering it.
+    // -----------------------------------------------------------------
+
+    private val midnightUtcMillis2 = 1_700_000_000_000L / 86_400_000L * 86_400_000L
+
+    private fun baseLocalItem(): ItemEntity = ItemEntity(
+        id = "item-1",
+        type = "WEB_ARTICLE",
+        sourceUrl = "https://example.com",
+        normalizedUrl = "example.com",
+        title = "Title",
+        bodyText = "Body",
+        summary = "Summary",
+        thumbnailUrl = "https://example.com/thumb.png",
+        category = "Tech",
+        eventDate = midnightUtcMillis2,
+        status = "ENRICHED",
+        isStarred = false,
+        summaryEditedByUser = false,
+        tagsEditedByUser = false,
+        titleEditedByUser = false,
+        createdAt = 1000L,
+        updatedAt = 1000L,
+        deletedAt = null
+    )
+
+    private fun basePulledItem(): SyncItemDto = SyncItemDto(
+        id = "item-1",
+        type = "WEB_ARTICLE",
+        sourceUrl = "https://example.com",
+        normalizedUrl = "example.com",
+        title = "Title",
+        bodyText = "Body",
+        summary = "Summary",
+        thumbnailUrl = "https://example.com/thumb.png",
+        category = "Tech",
+        entities = null,
+        eventDate = epochMillisToIsoDate(midnightUtcMillis2),
+        status = "ENRICHED",
+        isStarred = false,
+        summaryLocked = false,
+        tagsLocked = false,
+        titleLocked = false,
+        updatedAt = 1000L,
+        deletedAt = null
+    )
+
+    private data class FieldCase(val name: String, val mutate: (ItemEntity, SyncItemDto) -> Pair<ItemEntity, SyncItemDto>)
+
+    private val itemFieldCases = listOf(
+        FieldCase("updatedAt") { l, p -> l.copy(updatedAt = l.updatedAt + 1) to p },
+        FieldCase("type") { l, p -> l.copy(type = "NOTE") to p },
+        FieldCase("sourceUrl") { l, p -> l.copy(sourceUrl = "https://different.example") to p },
+        FieldCase("normalizedUrl") { l, p -> l.copy(normalizedUrl = "different.example") to p },
+        FieldCase("title") { l, p -> l.copy(title = "Different Title") to p },
+        FieldCase("bodyText") { l, p -> l.copy(bodyText = "Different body") to p },
+        FieldCase("summary") { l, p -> l.copy(summary = "Different summary") to p },
+        FieldCase("thumbnailUrl") { l, p -> l.copy(thumbnailUrl = "https://different.example/t.png") to p },
+        FieldCase("category") { l, p -> l.copy(category = "Health") to p },
+        FieldCase("eventDate") { l, p -> l.copy(eventDate = l.eventDate!! + 86_400_000L) to p },
+        FieldCase("status") { l, p -> l.copy(status = "PENDING") to p },
+        FieldCase("isStarred") { l, p -> l.copy(isStarred = true) to p },
+        FieldCase("summaryEditedByUser/summaryLocked") { l, p -> l.copy(summaryEditedByUser = true) to p },
+        FieldCase("tagsEditedByUser/tagsLocked") { l, p -> l.copy(tagsEditedByUser = true) to p },
+        FieldCase("titleEditedByUser/titleLocked") { l, p -> l.copy(titleEditedByUser = true) to p },
+        FieldCase("deletedAt") { l, p -> l.copy(deletedAt = 5000L) to p }
+    )
+
+    @Test
+    fun itemContentIdentical_baseFixturesAreIdentical_sanityCheck() {
+        assertEquals(true, itemContentIdentical(baseLocalItem(), basePulledItem()))
+    }
+
+    @Test
+    fun itemContentIdentical_isSensitiveToAChangeInAnySingleFieldAlone() {
+        for (case in itemFieldCases) {
+            val (mutatedLocal, mutatedPulled) = case.mutate(baseLocalItem(), basePulledItem())
+            assertEquals(
+                "itemContentIdentical should be sensitive to a change in '${case.name}' alone",
+                false,
+                itemContentIdentical(mutatedLocal, mutatedPulled)
+            )
+        }
+    }
 }

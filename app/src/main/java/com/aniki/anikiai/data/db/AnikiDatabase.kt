@@ -6,6 +6,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.aniki.anikiai.feed.TagWeightConfig
 
 @Database(
     entities = [
@@ -15,7 +16,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         EngagementEventEntity::class,
         ItemFtsEntity::class
     ],
-    version = 9,
+    version = 11,
     exportSchema = false
 )
 abstract class AnikiDatabase : RoomDatabase() {
@@ -176,6 +177,70 @@ abstract class AnikiDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Adds engagementSignal (local-only, not synced): a running per-item total of engagement
+         * affinity signal, replacing a full engagement_events table scan on every Feed refresh
+         * (ItemRepository.computeUserTagWeights) with an incrementally-maintained column summed
+         * with one cheap GROUP BY (ItemDao.getTagSignalTotals) -- see feed.signalForEvent, folded
+         * in going forward by ItemRepository.recordEvent / SyncRepository.mergeEngagementEvent.
+         *
+         * Existing devices (real friend-testing data) get a one-time historical fold of every
+         * engagement_events row they already have, right here, before either the client-side
+         * prune (work/EngagementEventPurger) or the server's engagement-event GC can ever run --
+         * that ordering is what makes pruning safe: nothing is discarded before its signal has
+         * somewhere durable to live. The CASE literals are TagWeightConfig()'s actual defaults,
+         * interpolated at compile time (not hand-copied) from the same Kotlin object
+         * feed.signalForEvent reads -- AnikiDatabaseMigrationConstantsTest still asserts this SQL
+         * text matches TagWeightConfig() as a regression guard against a future edit reintroducing
+         * a hardcoded, driftable literal here.
+         */
+        /**
+         * Built as its own property (rather than inlined in [MIGRATION_9_10]) so
+         * AnikiDatabaseMigrationConstantsTest -- a plain JVM test, no Android instrumentation --
+         * can inspect the generated SQL text directly and assert its literals still match
+         * [TagWeightConfig]'s current defaults, without needing to execute a real migration.
+         */
+        internal val BACKFILL_ENGAGEMENT_SIGNAL_SQL: String = run {
+            val c = TagWeightConfig()
+            """
+            UPDATE items SET engagementSignal = COALESCE((
+                SELECT SUM(
+                    CASE e.eventType
+                        WHEN 'OPENED' THEN ${c.opened}
+                        WHEN 'STARRED' THEN ${c.starred}
+                        WHEN 'DISMISSED' THEN ${c.dismissed}
+                        WHEN 'SWIPED_FAST' THEN ${c.swipedFast}
+                        WHEN 'DWELL' THEN MIN(COALESCE(e.value, 0.0) / ${c.dwellFullMs}, 1.0) * ${c.dwellMax}
+                        ELSE 0.0
+                    END
+                )
+                FROM engagement_events e
+                WHERE e.itemId = items.id
+            ), 0.0)
+            """.trimIndent()
+        }
+
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE items ADD COLUMN engagementSignal REAL NOT NULL DEFAULT 0")
+                db.execSQL(BACKFILL_ENGAGEMENT_SIGNAL_SQL)
+            }
+        }
+
+        /**
+         * Purely additive perf migration (S3 of the maintainability audit, no data/behavior
+         * change): an index on items.deletedAt, which `WHERE deletedAt IS NULL`/`IS NOT NULL`
+         * gates in nearly every hot read query (observeAllItems, observeAllItemsWithTags, search,
+         * getAllItemsWithTags) plus the trash purge scan (getExpiredTrashItemIds) -- previously
+         * unindexed despite being the single most common predicate in the whole query set, same
+         * category of gap MIGRATION_3_4 closed for normalizedUrl/createdAt/status.
+         */
+        private val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_items_deletedAt ON items(deletedAt)")
+            }
+        }
+
         fun getInstance(context: Context): AnikiDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -184,7 +249,7 @@ abstract class AnikiDatabase : RoomDatabase() {
                     "aniki.db"
                 ).addMigrations(
                     MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
-                    MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9
+                    MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11
                 ).build().also { INSTANCE = it }
             }
         }

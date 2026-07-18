@@ -120,6 +120,7 @@ private const val BLUR_IN_MS = 150
 @Composable
 fun FeedScreen(
     repository: ItemRepository,
+    feedSessionState: FeedSessionState,
     onOpenDetail: (String) -> Unit,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier
@@ -127,7 +128,7 @@ fun FeedScreen(
     val appContext = LocalContext.current.applicationContext
     val viewModel: FeedViewModel = viewModel(
         factory = viewModelFactory {
-            initializer { FeedViewModel(repository, appContext) }
+            initializer { FeedViewModel(repository, appContext, feedSessionState) }
         }
     )
     val state by viewModel.state.collectAsState()

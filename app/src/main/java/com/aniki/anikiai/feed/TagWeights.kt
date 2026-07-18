@@ -19,24 +19,42 @@ fun computeTagWeights(
 
     val raw = HashMap<String, Double>()
     for (record in records) {
-        val signal = signalFor(record, config)
+        val signal = signalForEvent(record.eventType, record.value, config)
         if (signal == 0.0) continue
         for (tag in record.itemTags) {
             raw[tag] = (raw[tag] ?: 0.0) + signal
         }
     }
-    if (raw.isEmpty()) return emptyMap()
+    return normalizeTagWeights(raw)
+}
 
+/**
+ * The per-event affinity signal, independent of which tags it applies to. Pulled out of
+ * [computeTagWeights] so [com.aniki.anikiai.data.repository.ItemRepository] can fold each event's
+ * signal into its item's running `engagementSignal` total at write time (see
+ * ItemRepository.recordEvent / SyncRepository.mergeEngagementEvent) instead of re-deriving it from
+ * a full event scan on every feed refresh. `AnikiDatabase`'s migration 9->10 backfill duplicates
+ * these same constants in raw SQL for the one-time historical fold -- see
+ * AnikiDatabaseMigrationConstantsTest, which asserts the two can't silently drift apart.
+ */
+fun signalForEvent(eventType: String, value: Double?, config: TagWeightConfig = TagWeightConfig()): Double =
+    when (eventType) {
+        EngagementEventType.OPENED -> config.opened
+        EngagementEventType.STARRED -> config.starred
+        EngagementEventType.DISMISSED -> config.dismissed
+        EngagementEventType.SWIPED_FAST -> config.swipedFast
+        EngagementEventType.DWELL -> min((value ?: 0.0) / config.dwellFullMs, 1.0) * config.dwellMax
+        else -> 0.0 // SHOWN (impression) and anything unknown contribute nothing
+    }
+
+/**
+ * Normalizes a raw per-tag (or, for [ItemRepository.computeUserTagWeights], per-tag-summed-from-
+ * per-item) signal map to [-1, 1] by the largest magnitude. Shared tail of [computeTagWeights] and
+ * the item-signal-aggregate path so both normalize identically.
+ */
+fun normalizeTagWeights(raw: Map<String, Double>): Map<String, Double> {
+    if (raw.isEmpty()) return emptyMap()
     val maxAbs = raw.values.maxOf { abs(it) }
     if (maxAbs == 0.0) return emptyMap()
     return raw.mapValues { it.value / maxAbs }
-}
-
-private fun signalFor(record: EngagementRecord, c: TagWeightConfig): Double = when (record.eventType) {
-    EngagementEventType.OPENED -> c.opened
-    EngagementEventType.STARRED -> c.starred
-    EngagementEventType.DISMISSED -> c.dismissed
-    EngagementEventType.SWIPED_FAST -> c.swipedFast
-    EngagementEventType.DWELL -> min((record.value ?: 0.0) / c.dwellFullMs, 1.0) * c.dwellMax
-    else -> 0.0 // SHOWN (impression) and anything unknown contribute nothing
 }

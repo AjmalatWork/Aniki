@@ -11,6 +11,7 @@ import com.aniki.anikiai.data.repository.ItemRepository
 import com.aniki.anikiai.data.repository.SyncRepository
 import com.aniki.anikiai.sync.SyncCursorStore
 import com.aniki.anikiai.sync.SyncWorker
+import com.aniki.anikiai.ui.feed.FeedSessionState
 import com.aniki.anikiai.work.EnrichmentScheduler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +28,13 @@ class AnikiApplication : Application(), SingletonImageLoader.Factory {
     val repository by lazy { ItemRepository(database.itemDao(), ftsIndexer, database) }
     val syncRepository by lazy { SyncRepository(database.itemDao(), ftsIndexer) }
     val syncCursorStore by lazy { SyncCursorStore(this) }
+
+    // M1 (maintainability audit): FeedViewModel's process-scoped session state (frozen feed
+    // order, last-settled card, swipe-hint flags), previously anonymous companion-object statics
+    // -- now a real, single app-lifetime instance threaded explicitly through
+    // AppRoot -> AnikiNavHost -> FeedScreen -> FeedViewModel's constructor, same as
+    // repository/syncRepository above. See FeedSessionState's own doc for the full rationale.
+    val feedSessionState by lazy { FeedSessionState() }
 
     override fun onCreate() {
         super.onCreate()

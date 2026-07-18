@@ -45,4 +45,40 @@ export const config = {
   tombstoneRetentionDays: Number(process.env.TOMBSTONE_RETENTION_DAYS ?? 90),
   // Max rows returned per /sync pull page, across all 4 synced tables combined.
   syncPullPageSize: Number(process.env.SYNC_PULL_PAGE_SIZE ?? 500),
+  // SEC3 (maintainability audit): a NOTE's bodyText has no length cap today short of the blanket
+  // 2mb express.json() body limit -- a pathological note flows untruncated through hashing,
+  // storage, and every sync round-trip before finally getting truncated at the last possible
+  // moment, inside enrichWithGemini's own CONTENT_CHAR_BUDGET (gemini.ts, 12,000 chars), right
+  // before the LLM call. 50,000 chars (~50KB, ~8-10k words) is roughly 4x that budget -- generous
+  // headroom for a legitimately long pasted note, while bounding the worst case for everything
+  // upstream of the LLM call (hash cost, Postgres row size, per-device sync payload size) to a
+  // small, predictable ceiling instead of "whatever fits under 2mb." Enforced at the /enrich
+  // boundary (server/src/index.ts) since that's the actual unauthenticated network entry point;
+  // the client (ItemRepository.createNote/updateNoteBody) also truncates to the same constant as
+  // a defensive backstop, but a client-side cap alone doesn't protect the server from a direct
+  // caller. Flagged for review -- this is a reasoned starting point, not a measured one.
+  maxNoteBodyChars: Number(process.env.MAX_NOTE_BODY_CHARS ?? 50_000),
+  // SEC3 (maintainability audit): /sync push currently accepts any number of rows that fits under
+  // the 2mb body limit, each upserted sequentially inside one Postgres transaction (pushChanges,
+  // repo.ts) -- an unusually large batch holds row locks and a transaction open for a
+  // correspondingly long time, which affects every other request against those rows, not just the
+  // slow request itself.
+  //
+  // This was originally set to 2,000 and had to be raised: guest mode never syncs, and
+  // EngagementEventPurger only prunes already-synced (dirty=0) rows, so every SHOWN/DWELL/OPENED
+  // event a guest ever generates in the Feed sits dirty=1 indefinitely and lands in one shot on
+  // markAllLocalRowsDirty() at account migration. At ~2 events per card view (SHOWN + DWELL --
+  // see FeedViewModel.onPageSettled), even moderate guest usage (a couple hundred card views/day
+  // for a few weeks before ever signing in) comfortably produces well over 10,000 events alone --
+  // 2,000 was tighter than the pre-existing 2mb byte limit itself for this exact scenario, making
+  // it strictly worse than having no row cap at all. 20,000 (summed across
+  // items+tags+itemTags+engagementEvents) sits comfortably above any realistic guest accumulation
+  // while staying a genuine backstop against the one payload shape the byte limit alone doesn't
+  // guard well: a very large number of small rows (tag/item-tag spam, ~90 bytes/row -- the byte
+  // limit alone doesn't bind until roughly 23,000 of those). The client still has no push-side
+  // pagination today, so an even more extreme accumulation (or a deliberately pathological
+  // payload) falls back to the pre-existing 2mb limit, unchanged by this cap either way. If usage
+  // data ever suggests real accounts are approaching this, the right fix is push-side pagination,
+  // not a higher number here.
+  maxSyncPushRows: Number(process.env.MAX_SYNC_PUSH_ROWS ?? 20_000),
 };

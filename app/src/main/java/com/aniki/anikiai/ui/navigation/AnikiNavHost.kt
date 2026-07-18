@@ -47,6 +47,7 @@ import com.aniki.anikiai.data.remote.AnikiApi
 import com.aniki.anikiai.data.repository.ItemRepository
 import com.aniki.anikiai.ui.detail.ItemDetailScreen
 import com.aniki.anikiai.ui.feed.FeedScreen
+import com.aniki.anikiai.ui.feed.FeedSessionState
 import com.aniki.anikiai.ui.library.LibraryScreen
 import com.aniki.anikiai.ui.note.NewNoteScreen
 import com.aniki.anikiai.ui.settings.SettingsScreen
@@ -77,6 +78,7 @@ private object AnikiDestinations {
 @Composable
 fun AnikiNavHost(
     repository: ItemRepository,
+    feedSessionState: FeedSessionState,
     api: AnikiApi,
     isSignedIn: Boolean,
     userEmail: String?,
@@ -120,6 +122,7 @@ fun AnikiNavHost(
             composable(AnikiDestinations.FEED) {
                 FeedScreen(
                     repository = repository,
+                    feedSessionState = feedSessionState,
                     onOpenDetail = { itemId -> navController.navigate(AnikiDestinations.itemDetailRoute(itemId)) },
                     contentPadding = innerPadding
                 )

@@ -47,8 +47,22 @@ class SyncManager(
                 // Tags before items/itemTags: a tag label must resolve locally before anything
                 // references its (possibly remapped) id.
                 pulled.tags.forEach { repository.mergeTag(it) }
-                conflicts += pulled.items.count { repository.mergeItem(it) }
-                pulled.itemTags.forEach { repository.mergeItemTag(it) }
+
+                // P1: collect every item touched by its own row or any of its tag-links across
+                // this whole page into one Set, then re-index each unique id exactly once below --
+                // instead of each of mergeItem/mergeItemTag indexing synchronously per row, which
+                // used to mean an item with T changed tag-links got T+1 full FTS rebuilds in one page.
+                val itemsToReindex = mutableSetOf<String>()
+                for (item in pulled.items) {
+                    val outcome = repository.mergeItem(item)
+                    if (outcome.conflicted) conflicts++
+                    outcome.reindexItemId?.let { itemsToReindex += it }
+                }
+                for (itemTag in pulled.itemTags) {
+                    repository.mergeItemTag(itemTag)?.let { itemsToReindex += it }
+                }
+                repository.reindexItems(itemsToReindex)
+
                 pulled.engagementEvents.forEach { repository.mergeEngagementEvent(it) }
 
                 pulledItemCount += pulled.items.size

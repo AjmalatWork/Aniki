@@ -19,6 +19,9 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
+// SEC3: mirrors ItemRepository's private MAX_NOTE_BODY_CHARS (not itself visible to this test file).
+private const val MAX_NOTE_BODY_CHARS = 50_000
+
 /**
  * Regression tests for the R1/R2/R3/R4 data-integrity audit findings: ItemRepository used to do
  * getItemById() -> entity.copy(...) -> updateItem(wholeRow) for nearly every mutation, so a
@@ -296,5 +299,54 @@ class ItemRepositoryRaceAndroidTest {
 
         assertEquals(0, purged)
         assertNotNull(dao.getItemById("i1"))
+    }
+
+    // -----------------------------------------------------------------
+    // SEC3: a client-side defensive backstop truncates a NOTE body at MAX_NOTE_BODY_CHARS (50,000,
+    // matching the server's maxNoteBodyChars default) rather than letting an unbounded body ever
+    // reach storage/sync. The real boundary enforcement is server-side (POST /enrich rejects an
+    // oversized body outright, see enrichLimits.test.ts) -- this is only "never even try to store
+    // one locally," a UX nicety (silent truncation, not a failed save) rather than the security
+    // guarantee.
+    // -----------------------------------------------------------------
+
+    @Test
+    fun createNote_leavesANormalLengthBodyUntouched() = runBlocking {
+        val body = "a".repeat(500)
+        val item = repository.createNote(title = "Title", body = body)
+
+        assertEquals(body, item.bodyText)
+        assertEquals(body, dao.getItemById(item.id)!!.bodyText)
+    }
+
+    @Test
+    fun createNote_truncatesABodyOverTheCap() = runBlocking {
+        val oversized = "a".repeat(MAX_NOTE_BODY_CHARS + 1000)
+        val item = repository.createNote(title = "Title", body = oversized)
+
+        assertEquals(MAX_NOTE_BODY_CHARS, item.bodyText!!.length)
+        assertEquals(MAX_NOTE_BODY_CHARS, dao.getItemById(item.id)!!.bodyText!!.length)
+    }
+
+    @Test
+    fun createNote_derivesTheFallbackTitleFromTheTruncatedBody_notTheOriginal() = runBlocking {
+        // Title fallback is body.take(60) -- if it read from the pre-truncation body instead this
+        // would still pass today (the first 60 chars are identical either way), but asserting
+        // against the truncated body directly guards against that ordering being flipped later.
+        val oversized = "x".repeat(MAX_NOTE_BODY_CHARS + 1000)
+        val item = repository.createNote(title = null, body = oversized)
+
+        assertEquals(item.bodyText!!.take(60), item.title)
+    }
+
+    @Test
+    fun updateNoteBody_truncatesABodyOverTheCap() = runBlocking {
+        insertItem(status = ItemStatus.ENRICHED)
+        val oversized = "b".repeat(MAX_NOTE_BODY_CHARS + 1000)
+
+        repository.updateNoteBody("i1", oversized)
+
+        val after = dao.getItemById("i1")!!
+        assertEquals(MAX_NOTE_BODY_CHARS, after.bodyText!!.length)
     }
 }

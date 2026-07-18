@@ -25,10 +25,11 @@ data class ItemWithTags(
     val tags: List<TagEntity>
 )
 
-/** Flat (itemId, tag label) rows for active links — used to attribute engagement events to tags. */
-data class ItemTagLabel(
-    val itemId: String,
-    val label: String
+/** One active tag's total engagement signal, summed across every item currently carrying it (see
+ *  [ItemDao.getTagSignalTotals]). */
+data class TagSignalTotal(
+    val label: String,
+    val signal: Double
 )
 
 @Dao
@@ -99,7 +100,7 @@ interface ItemDao {
     suspend fun getDemoItem(): ItemEntity?
 
     /** Marks the Feed's one-time demo-item landing animation played, so it never replays --
-     *  called once, from FeedViewModel.takeFreshSnapshot(), the first time it decides to animate the item. */
+     *  called once, from FeedViewModel.applyFreshSnapshot(), the first time it decides to animate the item. */
     @Query("UPDATE items SET demoLandingAnimationShown = 1 WHERE id = :id")
     suspend fun markDemoLandingAnimationShown(id: String)
 
@@ -363,23 +364,57 @@ interface ItemDao {
     @Query("DELETE FROM item_tags WHERE tagId = :tagId")
     suspend fun deleteItemTagsForTag(tagId: String)
 
+    /**
+     * IGNORE (not the usual REPLACE upsert pattern) because engagement_events is append-only and
+     * immutable -- a re-delivered event (a sync retry, a pulled event this device already has)
+     * must be a true no-op, not overwrite anything. Returns the inserted rowId, or -1 when the
+     * conflict strategy silently ignored a duplicate id -- callers (ItemRepository.recordEvent,
+     * SyncRepository.mergeEngagementEvent) gate the [incrementEngagementSignal] fold on this
+     * return value so a re-delivered duplicate can never double-count its signal.
+     */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insertEngagementEvent(event: EngagementEventEntity)
+    suspend fun insertEngagementEvent(event: EngagementEventEntity): Long
 
-    /** All engagement events (local mirror), for the offline per-tag weight derivation. */
-    @Query("SELECT * FROM engagement_events")
-    suspend fun getAllEngagementEvents(): List<EngagementEventEntity>
+    /** Targeted single-purpose write (see the section below): folds one event's signal into its
+     *  item's running total. Deliberately does not touch dirty/updatedAt -- engagementSignal is
+     *  local-derived bookkeeping, not synced content, so touching either would spuriously mark
+     *  the item dirty (re-pushing it for a field the server doesn't even have) or trip the Feed's
+     *  refresh-pill fingerprint (FeedViewModel.sessionFingerprint) on every single engagement
+     *  event, which is exactly what that fingerprint deliberately excludes view-tracking fields to
+     *  avoid. */
+    @Query("UPDATE items SET engagementSignal = engagementSignal + :delta WHERE id = :id")
+    suspend fun incrementEngagementSignal(id: String, delta: Double)
 
-    /** Active (itemId, label) pairs, to attribute each engagement event to the item's tags. */
+    /**
+     * Per-tag engagement signal, summed from the incrementally-maintained items.engagementSignal
+     * column instead of scanning engagement_events -- see ItemRepository.computeUserTagWeights,
+     * which replaces the old full-event-scan implementation with this. Cost is bounded by active
+     * items/tags (the same set the Feed already ranks over), not total event history, which is
+     * what decouples Feed-refresh latency from how long someone's used the app (see FeedViewModel's
+     * doc). Filter conditions on item_tags/tags exactly match the old getAllActiveItemTagLabels
+     * query this replaces -- deliberately not also filtering items.deletedAt, to preserve the same
+     * "a trashed-but-not-yet-tag-cleaned-up item's tags still count" behavior the old Kotlin-side
+     * assembly had.
+     */
     @Query(
         """
-        SELECT item_tags.itemId AS itemId, tags.label AS label
+        SELECT tags.label AS label, SUM(items.engagementSignal) AS signal
         FROM item_tags
         JOIN tags ON tags.id = item_tags.tagId
+        JOIN items ON items.id = item_tags.itemId
         WHERE item_tags.deletedAt IS NULL AND tags.deletedAt IS NULL
+        GROUP BY tags.label
         """
     )
-    suspend fun getAllActiveItemTagLabels(): List<ItemTagLabel>
+    suspend fun getTagSignalTotals(): List<TagSignalTotal>
+
+    /** Client-side retention half of S1/S4 (see work/EngagementEventPurger): once an event is
+     *  synced (dirty=0), its signal is already folded into items.engagementSignal, so the raw row
+     *  is disposable. No restore-race guard needed here unlike [hardDeleteExpiredTrashItem] --
+     *  nothing ever un-deletes an engagement event, so there's no concurrent action this could
+     *  clobber. Returns the count purged, for logging. */
+    @Query("DELETE FROM engagement_events WHERE dirty = 0 AND createdAt < :cutoff")
+    suspend fun pruneOldEngagementEvents(cutoff: Long): Int
 
     @Query("SELECT * FROM engagement_events WHERE dirty = 1")
     suspend fun getDirtyEngagementEvents(): List<EngagementEventEntity>

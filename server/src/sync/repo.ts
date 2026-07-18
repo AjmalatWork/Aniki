@@ -459,25 +459,44 @@ export interface TombstonePurgeResult {
   items: number;
   tags: number;
   itemTags: number;
+  engagementEvents: number;
 }
 
 /**
- * Hard-deletes rows tombstoned (deleted_at set) longer than `retentionMs` ago. Tombstones
- * otherwise accumulate forever -- pullChanges intentionally still returns them (so other devices
- * learn of the delete), but nothing ever purged the source rows.
+ * Hard-deletes rows tombstoned (deleted_at set) longer than `retentionMs` ago, plus (S4 of the
+ * engagement_events scalability pass) engagement_events rows older than that same window --
+ * engagement_events has no deleted_at column (it's append-only, never tombstoned), so its own
+ * clause ages off `created_at` directly instead. Deliberately reuses the *same* `retentionMs`
+ * (config.tombstoneRetentionDays, currently 90 days) rather than a second, separate constant --
+ * one retention window is easier to reason about across the system than two similar-but-close
+ * numbers that can drift apart. Tombstones otherwise accumulate forever -- pullChanges
+ * intentionally still returns them (so other devices learn of the delete), but nothing ever
+ * purged the source rows.
  *
  * `retentionMs` is a global assumption, not a per-device one: any device that stays offline
  * longer than this window will miss the delete on its next sync and see the row as if it were
  * never deleted (a pull only returns rows with seq > its cursor; a purged tombstone just vanishes
- * from that stream rather than announcing itself). Not scoped to a single user -- this is a
- * maintenance sweep across the whole table, run on a schedule, not per-request.
+ * from that stream rather than announcing itself). For engagement_events specifically, this is
+ * also the new-device bootstrap window (see ItemRepository.computeUserTagWeights on the client):
+ * a brand-new device (or a reinstall) builds its engagementSignal aggregate from whatever the
+ * server hasn't pruned yet, so signal older than this window is lost to it even though an
+ * existing device that already folded it into its own local aggregate keeps it. Accepted
+ * tradeoff -- affinity is a soft, normalized heuristic, and old events matter least to it. Not
+ * scoped to a single user -- this is a maintenance sweep across the whole table, run on a
+ * schedule, not per-request.
  */
 export async function purgeOldTombstones(retentionMs: number): Promise<TombstonePurgeResult> {
   const cutoff = Date.now() - retentionMs;
-  const [items, tags, itemTags] = await Promise.all([
+  const [items, tags, itemTags, engagementEvents] = await Promise.all([
     pool.query("DELETE FROM items WHERE deleted_at IS NOT NULL AND deleted_at < $1", [cutoff]),
     pool.query("DELETE FROM tags WHERE deleted_at IS NOT NULL AND deleted_at < $1", [cutoff]),
     pool.query("DELETE FROM item_tags WHERE deleted_at IS NOT NULL AND deleted_at < $1", [cutoff]),
+    pool.query("DELETE FROM engagement_events WHERE created_at < $1", [cutoff]),
   ]);
-  return { items: items.rowCount ?? 0, tags: tags.rowCount ?? 0, itemTags: itemTags.rowCount ?? 0 };
+  return {
+    items: items.rowCount ?? 0,
+    tags: tags.rowCount ?? 0,
+    itemTags: itemTags.rowCount ?? 0,
+    engagementEvents: engagementEvents.rowCount ?? 0,
+  };
 }

@@ -1,6 +1,6 @@
 import { pool } from "../db/pool.js";
 
-/** Full JSON dump of a user's active library: items, tags, item_tags, engagement events. Deleted (tombstoned) rows are excluded — they're not part of the user's readable library anymore. */
+/** Full JSON dump of a user's active library: items, tags, item_tags, engagement events. Deleted (tombstoned) rows are excluded — they're not part of the user's readable library anymore. engagementEvents reflects only whatever purgeOldTombstones' retention window (TOMBSTONE_RETENTION_DAYS) hasn't pruned yet -- older raw events are gone server-side once purged, though their signal lives on, folded into each device's own items.engagementSignal aggregate (see the client's ItemRepository.computeUserTagWeights). */
 export async function exportUserData(uid: string): Promise<Record<string, unknown>> {
   const [users, items, tags, itemTags, engagementEvents] = await Promise.all([
     pool.query("SELECT id, email, created_at FROM users WHERE id = $1", [uid]),

@@ -60,6 +60,22 @@ export type EnrichmentErrorCode =
   | "EXTRACTION_FAILED"
   | "GENERIC";
 
+/**
+ * Runtime mirror of the EnrichmentErrorCode union above (M3 of the maintainability audit): a TS
+ * `type` has no representation at runtime, so there's nothing for a test -- on either side of the
+ * client/server boundary -- to enumerate/verify against without one. This array is the thing
+ * types.test.ts checks against every code actually thrown/returned server-side, and is also what
+ * the client's EnrichmentMessagesTest.kt hand-mirrors to verify every code has curated copy and a
+ * retry-eligibility entry. Keep this in lockstep with the union above when either changes.
+ */
+export const ENRICHMENT_ERROR_CODES: readonly EnrichmentErrorCode[] = [
+  "RATE_LIMITED",
+  "QUOTA_EXCEEDED",
+  "FETCH_FAILED",
+  "EXTRACTION_FAILED",
+  "GENERIC",
+];
+
 export class EnrichmentError extends Error {
   readonly code: EnrichmentErrorCode = "GENERIC";
 }

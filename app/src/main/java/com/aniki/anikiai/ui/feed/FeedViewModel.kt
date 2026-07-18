@@ -28,7 +28,7 @@ sealed interface FeedUiState {
     /**
      * @param demoLandingItemId the onboarding demo item's id, only on the one Feed session where
      *   it should play its one-time "you just shared this" landing animation (see
-     *   FeedViewModel.takeFreshSnapshot()); null otherwise, including every later session. Cleared to null
+     *   FeedViewModel.applyFreshSnapshot()); null otherwise, including every later session. Cleared to null
      *   by [FeedViewModel.onLandingAnimationPlayed] once FeedCard finishes playing it, so
      *   scrolling away and back within the same session doesn't replay it either.
      */
@@ -50,7 +50,8 @@ sealed interface FeedUiState {
  */
 class FeedViewModel(
     private val repository: ItemRepository,
-    private val appContext: Context
+    private val appContext: Context,
+    private val sessionState: FeedSessionState
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<FeedUiState>(FeedUiState.Loading)
@@ -76,8 +77,8 @@ class FeedViewModel(
         // change that lands while it's dead is caught instead by reprojectFrozen on the next entry).
         viewModelScope.launch {
             repository.observeAllItemsWithTags().collect { live ->
-                val baseline = sessionFingerprint ?: return@collect
-                if (fingerprintOf(live) != baseline) _refreshAvailable.value = true
+                val baseline = sessionState.fingerprint ?: return@collect
+                if (FeedSessionState.fingerprintOf(live) != baseline) _refreshAvailable.value = true
             }
         }
     }
@@ -98,53 +99,16 @@ class FeedViewModel(
     private var idleTimerJob: Job? = null
     private var isFeedVisible = false
 
-    companion object {
-        // Session-scoped (this process run), not the ViewModel's own lifecycle: Navigation-Compose
-        // may retain/recreate this ViewModel across Feed<->Library tab switches within one process
-        // run, and "session" here means the whole run, not one screen visit. Resets naturally on
-        // process death, which is the only thing allowed to reset it (per the spec).
-        private var sessionPrefsLoaded = false
-        private var isFirstSessionEver = false
-
-        // Slice 2, item 1 — stable feed session ordering. The frozen feed order for THIS process
-        // run lives here (not in the ViewModel instance) so it survives ViewModel recreation across
-        // Feed<->Library tab switches and Feed->Detail->back, and resets only on process death.
-        // "Session = process lifetime, reset only on cold start" — same precedent as the swipe-hint
-        // flags above. Re-entering the Feed re-projects current item data onto this exact order
-        // (never re-ranks); only an explicit refresh (first open, or the pill) recomputes it.
-        private var sessionOrderIds: List<String>? = null
-
-        // The item the pager last settled on this session. Restored as the Feed's initial page when
-        // it's re-entered after a Detail round-trip (item 1: come back to the card you opened, not
-        // the top). Process-scoped like the order it indexes into, so it survives the round-trip
-        // even if the ViewModel is recreated.
-        private var sessionLastSettledItemId: String? = null
-
-        // The ranking-input baseline captured at the last full refresh: the set of "id:starred" over
-        // ENRICHED items. Staleness (the pill) = the live DB fingerprint diverging from this. It
-        // deliberately excludes view-tracking fields (lastShownAt/lastViewedAt/engagement) so
-        // ordinary swiping and opening never trip the pill — only content/preference changes do
-        // (item 4: "anything that changes the ranking should trigger it").
-        private var sessionFingerprint: Set<String>? = null
-
-        /** The ranking-input fingerprint of a library snapshot (see [sessionFingerprint]). */
-        private fun fingerprintOf(items: List<ItemWithTags>): Set<String> =
-            items.asSequence()
-                .filter { it.item.status == ItemStatus.ENRICHED }
-                .map { "${it.item.id}:${it.item.isStarred}" }
-                .toSet()
-    }
-
     /** Feed became the visible surface: on the true first-ever visit this process boots the
      *  first-run hint (and unlocks idle re-trigger for the rest of this session only); on any
      *  later visit it just arms the idle timer if this is still that first session. */
     fun onFeedVisible() {
         isFeedVisible = true
         viewModelScope.launch {
-            if (!sessionPrefsLoaded) {
-                sessionPrefsLoaded = true
+            if (!sessionState.prefsLoaded) {
+                sessionState.prefsLoaded = true
                 val alreadyShownBefore = feedPrefsStore.hasShownFirstOpenHint()
-                isFirstSessionEver = !alreadyShownBefore
+                sessionState.isFirstSessionEver = !alreadyShownBefore
                 if (!alreadyShownBefore) {
                     feedPrefsStore.markFirstOpenHintShown()
                     triggerHint()
@@ -170,7 +134,7 @@ class FeedViewModel(
 
     private fun scheduleIdleTimer() {
         idleTimerJob?.cancel()
-        if (!isFeedVisible || !isFirstSessionEver) return
+        if (!isFeedVisible || !sessionState.isFirstSessionEver) return
         idleTimerJob = viewModelScope.launch {
             delay(IDLE_HINT_DELAY_MS)
             triggerHint()
@@ -210,7 +174,7 @@ class FeedViewModel(
     fun onEnter() {
         logSessionSummary() // in case onLeaveFeed was skipped (e.g. process death) since the last open
         viewModelScope.launch {
-            val frozen = sessionOrderIds
+            val frozen = sessionState.orderIds
             if (frozen == null) applyFreshSnapshot() else reprojectFrozen(frozen)
         }
     }
@@ -245,8 +209,8 @@ class FeedViewModel(
             val ordered = buildFeed(snapshot.map { it.toCandidate() }, cachedWeights, System.currentTimeMillis())
             ordered.mapNotNull { byId[it.id] }
         }
-        sessionOrderIds = items.map { it.item.id }
-        sessionFingerprint = fingerprintOf(snapshot)
+        sessionState.orderIds = items.map { it.item.id }
+        sessionState.fingerprint = FeedSessionState.fingerprintOf(snapshot)
         _refreshAvailable.value = false
 
         // The onboarding demo item's one-time landing animation: eligible exactly once ever, the
@@ -273,7 +237,7 @@ class FeedViewModel(
         val byId = snapshot.associateBy { it.item.id }
         val items = orderIds.mapNotNull { byId[it] } // preserve order; drop anything trashed/removed
         _state.value = if (items.isEmpty()) FeedUiState.Empty else FeedUiState.Content(items)
-        sessionFingerprint?.let { if (fingerprintOf(snapshot) != it) _refreshAvailable.value = true }
+        sessionState.fingerprint?.let { if (FeedSessionState.fingerprintOf(snapshot) != it) _refreshAvailable.value = true }
         Timber.i("feed reprojected: candidates=%d", items.size)
     }
 
@@ -295,12 +259,12 @@ class FeedViewModel(
     /** The card index the Feed should open on when re-entered (item 1). -1 if none/unknown, which
      *  [FeedScreen] coerces to the first page. */
     fun resumePageIn(items: List<ItemWithTags>): Int =
-        sessionLastSettledItemId?.let { id -> items.indexOfFirst { it.item.id == id } } ?: -1
+        sessionState.lastSettledItemId?.let { id -> items.indexOfFirst { it.item.id == id } } ?: -1
 
     /** Pager settled on a new card: close out the previous card's dwell, then mark the new one shown. */
     fun onPageSettled(itemId: String) {
         onInteraction()
-        sessionLastSettledItemId = itemId // remembered so a Detail round-trip returns to this card
+        sessionState.lastSettledItemId = itemId // remembered so a Detail round-trip returns to this card
         if (focusedItemId == itemId) return
         val now = System.currentTimeMillis()
         val previous = focusedItemId
@@ -341,8 +305,8 @@ class FeedViewModel(
 
     fun onDismiss(itemId: String) {
         // Drop it from the frozen order too, so a Detail round-trip / tab return doesn't re-project
-        // the dismissed card back in (reprojectFrozen rebuilds strictly from sessionOrderIds).
-        sessionOrderIds = sessionOrderIds?.filterNot { it == itemId }
+        // the dismissed card back in (reprojectFrozen rebuilds strictly from sessionState.orderIds).
+        sessionState.orderIds = sessionState.orderIds?.filterNot { it == itemId }
         val current = _state.value
         if (current is FeedUiState.Content) {
             val remaining = current.items.filterNot { it.item.id == itemId }
