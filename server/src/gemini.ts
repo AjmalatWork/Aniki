@@ -98,7 +98,7 @@ export async function enrichWithGemini(
   }
   try {
     return await callModel(prompt);
-  } catch (firstErr) {
+  } catch (_firstErr) {
     // Malformed JSON (or a transient hiccup) — retry once before giving up.
     if (!consumeCall()) {
       throw new QuotaExceededError("Daily enrichment call limit reached — try again tomorrow");
